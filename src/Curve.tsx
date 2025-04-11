@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -314,16 +314,16 @@ const PumpCurveNew2: React.FC = () => {
       ctx.restore();
     }
 
-    // Set fixed font sizes
+    // Set proportional font sizes based on canvas dimensions
     const FONT_SIZES = {
-      axisLabel: 'bold 18px Arial',
-      mainValue: '16px Arial',
-      subValue: '14px Arial'
+      axisLabel: `bold ${Math.max(14, Math.min(24, canvasWidth * 0.015))}px Arial`,
+      mainValue: `${Math.max(12, Math.min(20, canvasWidth * 0.013))}px Arial`,
+      subValue: `${Math.max(10, Math.min(16, canvasWidth * 0.011))}px Arial`
     };
 
     // Draw grid
     ctx.strokeStyle = '#ddd';
-    ctx.lineWidth = 0.5;
+    ctx.lineWidth = Math.max(0.5, canvasWidth * 0.0004);
 
     // Vertical grid lines with actual flow values
     for (let i = 0; i <= 10; i++) {
@@ -379,27 +379,27 @@ const PumpCurveNew2: React.FC = () => {
     
     // Left Y-axis label (Head)
     ctx.fillStyle = '#0000FF';
-    ctx.translate(20, canvasHeight / 2);
+    ctx.translate(20, canvasHeight / 5);
     ctx.rotate(-Math.PI / 2);
     ctx.textAlign = 'center';
     ctx.font = FONT_SIZES.axisLabel;
-    ctx.fillText('Head (actual)', 0, 0);
+    // ctx.fillText('Head (actual)', 0, 0);
     
     ctx.restore();
     
     // Right Y-axis label (Efficiency)
     ctx.save();
     ctx.fillStyle = '#FF0000';
-    ctx.translate(canvasWidth - 60, canvasHeight / 2);
+    ctx.translate(canvasWidth - 60, canvasHeight / 5);
     ctx.rotate(-Math.PI / 2);
     ctx.textAlign = 'center';
     ctx.font = FONT_SIZES.axisLabel;
-    ctx.fillText('Efficiency (actual)', 0, 0);
+    // ctx.fillText('Efficiency (actual)', 0, 0);
     ctx.restore();
 
     // Draw axes
     ctx.strokeStyle = '#000';
-    ctx.lineWidth = 1;
+    ctx.lineWidth = Math.max(1, canvasWidth * 0.0008);
 
     // X-axis
     ctx.beginPath();
@@ -417,7 +417,7 @@ const PumpCurveNew2: React.FC = () => {
     ctx.fillStyle = '#000';
     ctx.font = FONT_SIZES.axisLabel;
     ctx.textAlign = 'center';
-    ctx.fillText('Flow (actual)', canvasWidth / 2, canvasHeight - 10);
+    // ctx.fillText('Flow (actual)', canvasWidth / 2, canvasHeight - 10);
 
     // Draw trendlines
     ctx.lineWidth = 2;
@@ -718,52 +718,6 @@ const PumpCurveNew2: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
-  const loadDefaultData = async () => {
-    try {
-      const response = await fetch('/file/ABCPJT_기타_BFP_2025-04-07.json');
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      const data: DefaultData = await response.json();
-      
-      // Update case info
-      setCaseInfo(data.caseInfo);
-      
-      // Update max values
-      setMaxHead(data.maxValues.head);
-      setMaxFlow(data.maxValues.flow);
-      setMaxEfficiency(data.maxValues.efficiency);
-      
-      // Update degrees if available
-      if (data.equations?.head?.degree) {
-        setHeadDegree(data.equations.head.degree);
-      }
-      if (data.equations?.efficiency?.degree) {
-        setEfficiencyDegree(data.equations.efficiency.degree);
-      }
-      
-      // Update points
-      if (data.points.headPoints) {
-        const headPoints = data.points.headPoints.map(point => ({
-          x: (parseFloat(point.flow) * 100) / data.maxValues.flow,
-          y: (parseFloat(point.head!) * 100) / data.maxValues.head
-        }));
-        setPoints(headPoints);
-      }
-      
-      if (data.points.efficiencyPoints) {
-        const efficiencyPoints = data.points.efficiencyPoints.map(point => ({
-          x: (parseFloat(point.flow) * 100) / data.maxValues.flow,
-          y: (parseFloat(point.efficiency!) * 100) / data.maxValues.efficiency
-        }));
-        setEfficiencyPoints(efficiencyPoints);
-      }
-    } catch (error) {
-      console.error('Error loading default data:', error);
-      alert('기본 데이터를 불러오는데 실패했습니다. JSON 파일이 public 폴더에 있는지 확인해주세요.');
-    }
-  };
-
   const loadJsonFile = (file: File) => {
     const reader = new FileReader();
     reader.onload = async (e) => {
@@ -865,17 +819,40 @@ const PumpCurveNew2: React.FC = () => {
     <Card>
       <CardContent className="p-10 bg-gray-300">
         <div className="space-y-4">
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold">PUMP CURVE EDITOR  version 0.1(beta)</h1>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setShowManual(true)}
-              className="rounded-full"
-              title="Show Manual"
-            >
-              <FileText className="h-6 w-6" />
-            </Button>
+          <div className="flex items-center justify-between gap-2">
+            <h1 className="text-2xl font-bold">PUMP CURVE EDITOR - version 0.1.1(beta)</h1>
+            <div className="flex items-center gap-2">
+              <div className="relative">
+                <input
+                  type="file"
+                  accept=".json"
+                  onChange={handleFileSelect}
+                  className="hidden"
+                  id="json-file-input"
+                  title="Select JSON file to load"
+                  aria-label="Select JSON file to load"
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => document.getElementById('json-file-input')?.click()}
+                  className="flex items-center gap-2 h-10"
+                >
+                  <FileUp className="h-4 w-4" />
+                  Load JSON
+                </Button>
+              </div>
+              <Button
+              variant="outline"
+                size="sm"
+                onClick={() => setShowManual(true)}
+                className="flex items-center gap-2 h-10"
+                title="Show Manual"
+              >
+                <FileText className="h-4 w-4" />
+                Manual
+              </Button>
+            </div>
           </div>
 
           <Dialog open={showManual} onOpenChange={setShowManual}>
@@ -942,26 +919,34 @@ const PumpCurveNew2: React.FC = () => {
               </div>
             </DialogContent>
           </Dialog>
-
+          <hr className="my-6 border-t border-gray-700" />
+          <div className="flex items-center gap-2">
+     <Label htmlFor="caseName">Case 명:</Label>
+     <Input
+       id="caseName"
+       value={caseInfo.caseName}
+       readOnly
+       className="flex-1 bg-yellow-200 h-8"
+     />
+   </div>
           <div className="flex justify-between items-center bg-gray-300">
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 p-4 bg-gray-300 rounded-lg flex-grow  mr-4 max-w-[1000px] ">
-            
-              <div className="flex items-center gap-2">
-                <Label htmlFor="caseName">Case 명:</Label>
-                <Input
-                  id="caseName"
-                  value={caseInfo.caseName}
-                  readOnly
-                  className="flex-1 bg-gray-300"
-                />
-              </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4   bg-gray-300 rounded-lg flex-grow max-w-[1000px]">
+           
+           
+           
+           
+           
+           
+           
+           
+           
               <div className="flex items-center gap-2">
                 <Label htmlFor="projectName">PJT:</Label>
                 <Input
                   id="projectName"
                   value={caseInfo.projectName}
                   onChange={(e) => setCaseInfo(prev => ({ ...prev, projectName: e.target.value }))}
-                  className="flex-1 bg-white"
+                  className="flex-1 bg-white h-8 max-w-40 min-w-30"
                 />
               </div>
               <div className="flex items-center gap-2">
@@ -971,7 +956,7 @@ const PumpCurveNew2: React.FC = () => {
                   title="단계 선택"
                   value={caseInfo.stage}
                   onChange={(e) => setCaseInfo(prev => ({ ...prev, stage: e.target.value }))}
-                  className="flex-1 h-10 rounded-md border border-input bg-background px-3 py-2 bg-white"
+                  className="flex-1 text-xs rounded-md border border-input bg-background px-3 py-2 h-9 max-w-40 bg-white"
                 >
                   <option value="수행">수행</option>
                   <option value="견적">견적</option>
@@ -985,7 +970,7 @@ const PumpCurveNew2: React.FC = () => {
                   type="date"
                   value={caseInfo.date}
                   onChange={(e) => setCaseInfo(prev => ({ ...prev, date: e.target.value }))}
-                  className="flex-1 bg-white"
+                  className="flex-1 bg-white h-9 max-w-40"
                 />
               </div>
               <div className="flex items-center gap-2">
@@ -994,52 +979,23 @@ const PumpCurveNew2: React.FC = () => {
                   id="pumpName"
                   value={caseInfo.pumpName}
                   onChange={(e) => setCaseInfo(prev => ({ ...prev, pumpName: e.target.value }))}
-                  className="flex-1 bg-white"
+                  className="flex-1 bg-white h-8 max-w-40"
                 />
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={loadDefaultData}
-                className="flex items-center gap-2 h-10"
-              >
-                <Upload className="h-4 w-4" />
-                Load Default
-              </Button>
-              <div className="relative">
-              <input
-                type="file"
-                accept=".json"
-                  onChange={handleFileSelect}
-                className="hidden"
-                  id="json-file-input"
-                  title="Select JSON file to load"
-                  aria-label="Select JSON file to load"
-              />
-              <Button
-                variant="outline"
-                size="sm"
-                  onClick={() => document.getElementById('json-file-input')?.click()}
-                  className="flex items-center gap-2 h-10"
-              >
-                  <FileUp className="h-4 w-4" />
-                  Load JSON
-              </Button>
-            </div>
-            </div>
-              </div>
+          </div>
 
-          <div className="flex items-center gap-4 flex-wrap">
-              <div className="flex items-center gap-2">
+          <hr className="border-gray-700" />
+
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-2">
               <Label htmlFor="maxHead">TDH Range:</Label>
               <Input
                 id="maxHead"
                 type="number"
                 value={maxHead}
                 onChange={(e) => setMaxHead(parseFloat(e.target.value) || 100)}
-                className="w-24"
+                className="w-24 h-8 bg-white"
               />
             </div>
             <div className="flex items-center gap-2">
@@ -1049,7 +1005,7 @@ const PumpCurveNew2: React.FC = () => {
                 type="number"
                 value={maxFlow}
                 onChange={(e) => setMaxFlow(parseFloat(e.target.value) || 100)}
-                className="w-24"
+                className="w-24  h-8 bg-white"
               />
             </div>
             <div className="flex items-center gap-2">
@@ -1059,12 +1015,12 @@ const PumpCurveNew2: React.FC = () => {
                 type="number"
                 value={maxEfficiency}
                 onChange={(e) => setMaxEfficiency(parseFloat(e.target.value) || 100)}
-                className="w-24"
+                className="w-24 h-8 bg-white"
               />
             </div>
             <div className="flex items-center gap-4">
               <Label className="font-medium">Record mode:</Label>
-              <div className="flex items-center bg-white rounded-lg p-1 border border-gray-200">
+              <div className="flex items-center bg-white rounded-lg border border-gray-200">
                 <button
                   onClick={() => setSelectedMode('head')}
                   className={`px-6 py-2 rounded-md text-sm font-medium transition-all duration-200 border ${
@@ -1077,7 +1033,7 @@ const PumpCurveNew2: React.FC = () => {
                 </button>
                 <button
                   onClick={() => setSelectedMode('efficiency')}
-                  className={`px-6 py-2 rounded-md text-sm font-medium transition-all duration-200 border ${
+                  className={`px-2 py-2 rounded-md text-sm font-medium transition-all duration-200 border ${
                     selectedMode === 'efficiency'
                       ? 'bg-white text-red-600 border-red-600 shadow-sm'
                       : 'text-gray-600 hover:text-red-600 border-transparent hover:border-red-300'
@@ -1087,17 +1043,17 @@ const PumpCurveNew2: React.FC = () => {
                 </button>
               </div>
             </div>
-              </div>
+          </div>
 
-          <div className="flex gap-6">
-            <div className="flex items-center bg-gray-300 p-3 rounded-lg border border-gray-700">
-              <span className="mr-3 font-medium text-gray-700">Head Degree:</span>
+          <div className="flex gap-2">
+            <div className="flex items-center bg-gray-300 p-2 ">
+              <span className="mr-1 font-medium text-sm text-gray-700">Head Degree:</span>
               <div className="flex gap-1">
                 {[2, 3, 4].map((degree) => (
                   <button
                     key={degree}
                     onClick={() => setHeadDegree(degree)}
-                    className={`w-12 h-12 rounded-lg font-bold transition-all duration-200 ${
+                    className={`w-8 h-8 rounded-lg font-bold transition-all duration-200 ${
                       headDegree === degree
                         ? 'bg-blue-600 text-white shadow-lg scale-105 border-2 border-blue-600'
                         : 'bg-white text-gray-600 hover:bg-blue-50 border border-gray-300'
@@ -1108,14 +1064,14 @@ const PumpCurveNew2: React.FC = () => {
                 ))}
               </div>
             </div>
-            <div className="flex items-center bg-gray-300 p-3 rounded-lg border border-gray-700">
-              <span className="mr-3 font-medium text-gray-700">Efficiency Degree:</span>
+            <div className="flex items-center bg-gray-300 p-2 ">
+              <span className="mr-3 font-medium text-sm text-gray-700">Efficiency Degree:</span>
               <div className="flex gap-1">
                 {[2, 3, 4].map((degree) => (
                   <button
                     key={degree}
                     onClick={() => setEfficiencyDegree(degree)}
-                    className={`w-12 h-12 rounded-lg font-bold transition-all duration-200 ${
+                    className={`w-8 h-8 rounded-lg font-bold transition-all duration-200 ${
                       efficiencyDegree === degree
                         ? 'bg-red-600 text-white shadow-lg scale-105 border-2 border-red-600'
                         : 'bg-white text-gray-600 hover:bg-red-50 border border-gray-300'
@@ -1128,57 +1084,70 @@ const PumpCurveNew2: React.FC = () => {
             </div>
           </div>
 
-          <div className="border rounded-lg p-4">
+          <div className="border rounded-lg bg-white p-6">
             {/* Add image controls */}
-            <div className="flex items-center gap-4 mb-4">
-              <div className="flex items-center gap-2 ">
-                <Label htmlFor="imageOpacity">Background Opacity:</Label>
-                <Input
-                  id="imageOpacity"
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.1"
-                  value={imageOpacity}
-                  onChange={(e) => setImageOpacity(parseFloat(e.target.value))}
-                  className="w-32"
-                />
-                <span>{(imageOpacity * 100).toFixed(0)}%</span>
+            <div className="flex items-center justify-between mb-6 px-4">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="imageOpacity" className="font-medium">Background Opacity:</Label>
+                  <Input
+                    id="imageOpacity"
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.1"
+                    value={imageOpacity}
+                    onChange={(e) => setImageOpacity(parseFloat(e.target.value))}
+                    className="w-32"
+                  />
+                  <span className="font-medium">{(imageOpacity * 100).toFixed(0)}%</span>
+                </div>
+                {backgroundImage && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={clearBackgroundImage}
+                    className="flex items-center gap-2"
+                  >
+                    <ImageIcon className="h-4 w-4" />
+                    Clear Background
+                  </Button>
+                )}
               </div>
-              {backgroundImage && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={clearBackgroundImage}
-                  className="flex items-center gap-2"
-                >
-                  <ImageIcon className="h-4 w-4" />
-                  Clear Background
-                </Button>
-              )}
             </div>
-            <div className="w-full max-w-[1800px] mx-auto">
-              <canvas
-                key={canvasKey}
-                ref={canvasRef}
-                onMouseDown={handleMouseDown}
-                onMouseMove={handleMouseMove}
-                onMouseUp={handleMouseUp}
-                onMouseLeave={handleMouseUp}
-                onContextMenu={handleCanvasClick}
-                className="w-full h-auto border rounded bg-white"
-                style={{ 
-                  cursor: isDragging ? 'grabbing' : 'crosshair',
-                  maxHeight: '1000px'
-                }}
-              />
+
+            <div className="w-full max-w-[1800px] mx-auto space-y-4">
+              <div className="flex justify-between px-4">
+                <h3 className="text-blue-600 font-bold text-lg">TDH(m)</h3>  
+                <h3 className="text-red-500 font-bold text-lg">Efficiency(%)</h3>
+              </div>
+              <div className="relative bg-white border-2 border-gray-200 rounded-lg shadow-inner">
+                <canvas
+                  key={canvasKey}
+                  ref={canvasRef}
+                  onMouseDown={handleMouseDown}
+                  onMouseMove={handleMouseMove}
+                  onMouseUp={handleMouseUp}
+                  onMouseLeave={handleMouseUp}
+                  onContextMenu={handleCanvasClick}
+                  className="w-full h-auto"
+                  style={{ 
+                    cursor: isDragging ? 'grabbing' : 'crosshair',
+                    maxHeight: '1000px'
+                  }}
+                />
+              </div>
+              <h3 className="text-center font-bold text-lg pt-2">Flowrate(m³/h)</h3>
             </div>
+            
             {/* Move trend line equations here */}
-            <div className="mt-4 space-y-4">
+            <hr className="my-2 border-t border-gray-300" />
+            
+            <div className="space-y-2 px-4">
               {headEquation && (
-                <div className="flex items-center gap-4 p-4 bg-gray-300 rounded-lg">
+                <div className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg border border-gray-200">
                   <div className="flex-grow max-w-[1200px] overflow-hidden">
-                    <span className="font-semibold text-blue-600">Head = </span>
+                    <span className="font-semibold text-blue-600">TDH = </span>
                     <span className="font-mono whitespace-nowrap overflow-x-auto">{headEquation}</span>
                   </div>
                   <div className="flex-shrink-0">
@@ -1190,7 +1159,7 @@ const PumpCurveNew2: React.FC = () => {
                         copyEffect === 'head-equation' ? 'bg-green-100 text-green-700 border-green-500' : ''
                       }`}
                     >
-                      <Copy className="h-4 w-4" />
+                      <Copy className="h- w-4" />
                       Copy
                     </Button>
                   </div>
@@ -1198,7 +1167,7 @@ const PumpCurveNew2: React.FC = () => {
               )}
 
               {efficiencyEquation && (
-                <div className="flex items-center gap-4 p-4 bg-gray-300 rounded-lg">
+                <div className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg border border-gray-200">
                   <div className="flex-grow max-w-[1200px] overflow-hidden">
                     <span className="font-semibold text-red-600">Efficiency = </span>
                     <span className="font-mono whitespace-nowrap overflow-x-auto">{efficiencyEquation}</span>
@@ -1248,7 +1217,7 @@ const PumpCurveNew2: React.FC = () => {
               </div>
             </div>
 
-            <div className="max-w-[800px]  rounded-lg">
+            <div className="max-w-[800px] rounded-lg">
               <h3 className="text-lg font-semibold mb-2">Head Points</h3>
               <table className="w-full border-collapse table-fixed bg-white">
                 <colgroup>
@@ -1275,7 +1244,7 @@ const PumpCurveNew2: React.FC = () => {
                       <td className="border p-2 text-left">{index + 1}</td>
                       <td className="border p-2 text-left">
                         <input
-                            type="number"
+                          type="number"
                           value={point.x}
                           onChange={(e) => handleEditPoint(index, 'head', parseFloat(e.target.value), point.y)}
                           className="w-20"
@@ -1288,7 +1257,7 @@ const PumpCurveNew2: React.FC = () => {
                       </td>
                       <td className="border p-2 text-left">
                         <input
-                            type="number"
+                          type="number"
                           value={point.y}
                           onChange={(e) => handleEditPoint(index, 'head', point.x, parseFloat(e.target.value))}
                           className="w-20"
@@ -1315,7 +1284,7 @@ const PumpCurveNew2: React.FC = () => {
               </table>
             </div>
 
-            <div className="max-w-[800px]  rounded-lg">
+            <div className="max-w-[800px] rounded-lg">
               <h3 className="text-lg font-semibold mb-2">Efficiency Points</h3>
               <table className="w-full border-collapse table-fixed bg-white">
                 <colgroup>
@@ -1342,7 +1311,7 @@ const PumpCurveNew2: React.FC = () => {
                       <td className="border p-2 text-left">{index + 1}</td>
                       <td className="border p-2 text-left">
                         <input
-                            type="number"
+                          type="number"
                           value={point.x}
                           onChange={(e) => handleEditPoint(index, 'efficiency', parseFloat(e.target.value), point.y)}
                           className="w-20"
@@ -1367,23 +1336,23 @@ const PumpCurveNew2: React.FC = () => {
                         {((point.y * maxEfficiency) / 100).toFixed(1)}
                       </td>
                       <td className="border p-2 text-left">
-                    <Button
-                      variant="ghost"
-                      size="icon"
+                        <Button
+                          variant="ghost"
+                          size="icon"
                           onClick={() => handleDeletePoint(index, 'efficiency')}
                           className="h-8 w-8"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-                </div>
-              </div>
             </div>
-          </CardContent>
+          </div>
+        </div>
+      </CardContent>
     </Card>
   );
 };
