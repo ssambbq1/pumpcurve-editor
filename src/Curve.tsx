@@ -6,16 +6,16 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Trash2, Copy, Table, Download, FileUp, Image as ImageIcon, FileText } from "lucide-react";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import Manual from '@/components/Manual';
+import ReactDOM from 'react-dom';
 
 interface Point {
   x: number;
   y: number;
+  isEfficiency?: boolean;
+  actualFlow?: number;
+  actualHead?: number;
+  actualEfficiency?: number;  // Add this line
 }
 
 interface BepPoint {
@@ -32,10 +32,10 @@ interface DefaultDataPoint {
 
 interface CaseInfo {
   caseName: string;
-  projectName: string;
-  stage: string;
-  date: string;
-  pumpName: string;
+    projectName: string;
+    stage: string;
+    date: string;
+    pumpName: string;
 }
 
 interface LoadedData {
@@ -44,6 +44,7 @@ interface LoadedData {
     head?: number;
     flow?: number;
     efficiency?: number;
+    rpm?: number;  // Add this line
   };
   equations?: {
     head?: {
@@ -80,6 +81,19 @@ interface DraggedPoint {
   type: 'head' | 'efficiency' | 'vfd';
 }
 
+interface ComparisonData {
+  points?: {
+    headPoints?: DefaultDataPoint[];
+    efficiencyPoints?: DefaultDataPoint[];
+    vfdPoints?: DefaultDataPoint[];
+  };
+  maxValues?: {
+    head?: number;
+    flow?: number;
+    efficiency?: number;
+  };
+}
+
 const PumpCurveNew2: React.FC = () => {
   const [points, setPoints] = useState<Point[]>([]);
   const [efficiencyPoints, setEfficiencyPoints] = useState<Point[]>([]);
@@ -111,6 +125,12 @@ const PumpCurveNew2: React.FC = () => {
   const [recordMode, setRecordMode] = useState<'head' | 'efficiency' | 'vfd'>('head');
   const [history, setHistory] = useState<HistoryState[]>([]);
   const [currentHistoryIndex, setCurrentHistoryIndex] = useState<number>(-1);
+  const [comparisonData, setComparisonData] = useState<ComparisonData | null>(null);
+  const [maxRpm, setMaxRpm] = useState<number>(1800);
+
+  // Add refs for previous range values
+  const prevMaxFlowRef = useRef(maxFlow);
+  const prevMaxHeadRef = useRef(maxHead);
 
   const sortedPoints = [...points].sort((a, b) => a.x - b.x);
   const sortedEfficiencyPoints = [...efficiencyPoints].sort((a, b) => a.x - b.x);
@@ -230,13 +250,26 @@ const PumpCurveNew2: React.FC = () => {
     drawingHeight: number,
     isOpHead: boolean = false
   ) => {
-    // Always draw points regardless of count
-    points.forEach(point => {
-      const x = padding.left + (point.x / 100) * drawingWidth;
-      const y = padding.top + (1 - point.y / 100) * drawingHeight;
+    if (points.length === 0) return;
+
+    const isEfficiencyPoints = points[0].isEfficiency;
+
+    // Convert percentage points to actual values
+    const actualPoints = points.map(point => ({
+      x: point.actualFlow || (point.x * maxFlow) / 100,  // Use actual flow if available
+      y: isEfficiencyPoints ? point.y : (point.actualHead || (point.y * maxHead) / 100),  // Keep efficiency as %, convert head to actual
+      isEfficiency: point.isEfficiency
+    }));
+
+    // Draw points
+    actualPoints.forEach(point => {
+      // Convert actual values to canvas coordinates
+      const x = padding.left + ((point.x / maxFlow) * drawingWidth);
+      const y = padding.top + (1 - (point.y / (isEfficiencyPoints ? 100 : maxHead))) * drawingHeight;
+
       ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.arc(x, y, isOpHead ? 6 : 4, 0, 2 * Math.PI);  // Make OP points larger
+      ctx.arc(x, y, isOpHead ? 6 : 4, 0, 2 * Math.PI);
       if (isOpHead) {
         // Draw white border
         ctx.strokeStyle = 'white';
@@ -244,19 +277,14 @@ const PumpCurveNew2: React.FC = () => {
         ctx.stroke();
         
         // Draw crosshair
-        const crossSize = 8; // Size of crosshair lines
+        const crossSize = 8;
         ctx.beginPath();
         ctx.strokeStyle = color;
         ctx.lineWidth = 1;
-        
-        // Horizontal line
         ctx.moveTo(x - crossSize, y);
         ctx.lineTo(x + crossSize, y);
-        
-        // Vertical line
         ctx.moveTo(x, y - crossSize);
         ctx.lineTo(x, y + crossSize);
-        
         ctx.stroke();
       }
       ctx.fill();
@@ -265,21 +293,30 @@ const PumpCurveNew2: React.FC = () => {
     // Only draw trendline if we have enough points and not opHead
     if (points.length <= degree || isOpHead) return;
 
-    const xValues = points.map(p => p.x);
-    const yValues = points.map(p => p.y);
+    // Calculate polynomial coefficients using actual values
+    const xValues = actualPoints.map(p => p.x);
+    const yValues = actualPoints.map(p => p.y);
     const coefficients = calculatePolynomialCoefficients(xValues, yValues, degree);
 
+    // Draw curve
     ctx.beginPath();
     ctx.strokeStyle = color;
 
-    const maxFlow = Math.max(...xValues);
+    const maxFlowPoint = Math.max(...xValues);
+    const stepSize = maxFlow / 200; // Increase number of points for smoother curve
 
-    for (let x = 0; x <= maxFlow; x += 1) {
-      const y = coefficients.reduce((acc, coeff, index) => acc + coeff * Math.pow(x, index), 0);
-      const canvasX = padding.left + (x / 100) * drawingWidth;
-      const canvasY = padding.top + (1 - y / 100) * drawingHeight;
+    for (let flow = 0; flow <= maxFlowPoint; flow += stepSize) {
+      const y = coefficients.reduce((acc, coeff, index) => acc + coeff * Math.pow(flow, index), 0);
       
-      if (x === 0) {
+      // Skip if y value is outside reasonable range
+      if (isEfficiencyPoints && (y < 0 || y > 100)) continue;
+      if (!isEfficiencyPoints && (y < 0 || y > maxHead * 1.2)) continue;
+
+      // Convert to canvas coordinates
+      const canvasX = padding.left + (flow / maxFlow) * drawingWidth;
+      const canvasY = padding.top + (1 - (y / (isEfficiencyPoints ? 100 : maxHead))) * drawingHeight;
+      
+      if (flow === 0) {
         ctx.moveTo(canvasX, canvasY);
       } else {
         ctx.lineTo(canvasX, canvasY);
@@ -328,7 +365,18 @@ const PumpCurveNew2: React.FC = () => {
       window.removeEventListener('resize', handleResize);
       resizeObserver.disconnect();
     };
-  }, [points, efficiencyPoints, vfdPoints, maxFlow, maxHead, maxEfficiency, backgroundImage, imageOpacity, headDegree, efficiencyDegree]);
+  }, [points, efficiencyPoints, vfdPoints, maxFlow, maxHead, maxEfficiency, backgroundImage, imageOpacity, headDegree, efficiencyDegree, comparisonData]); // Add comparisonData to dependencies
+
+  // Add a new useEffect for immediate canvas updates when comparisonData changes
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        drawCanvas(ctx, canvas.width, canvas.height);
+      }
+    }
+  }, [comparisonData]);
 
   // Separate drawing logic into its own function
   const drawCanvas = (
@@ -338,8 +386,8 @@ const PumpCurveNew2: React.FC = () => {
   ) => {
     // Define padding
     const padding = {
-      left: Math.round(canvasWidth * 0.07),    // increased from 0.05
-      right: Math.round(canvasWidth * 0.07),   // increased from 0.05
+      left: Math.round(canvasWidth * 0.07),
+      right: Math.round(canvasWidth * 0.07),
       top: Math.round(canvasHeight * 0.033),
       bottom: Math.round(canvasHeight * 0.060)
     };
@@ -681,6 +729,75 @@ const PumpCurveNew2: React.FC = () => {
       ctx.fillText('Max Flow', labelCanvasX2, labelCanvasY2);
       ctx.restore();
     }
+
+    // Draw comparison case curves if available
+    if (comparisonData?.points) {
+      ctx.lineWidth = 3; // Increased from 2 to 3 (1.5x thicker)
+      ctx.strokeStyle = '#808080'; // Gray color for comparison curves
+      ctx.setLineDash([]); // Solid line for comparison curves
+
+      // Draw comparison head points and curve
+      if (comparisonData.points.headPoints && comparisonData.points.headPoints.length > 0) {
+        const comparisonHeadPoints = comparisonData.points.headPoints.map(point => {
+          const x = (Number(point.flow) * 100) / maxFlow;
+          const y = (Number(point.head) * 100) / maxHead;
+          return {
+            x: Math.max(0, Math.min(100, x)),
+            y: Math.max(0, Math.min(100, y))
+          };
+        }).filter(point => !isNaN(point.x) && !isNaN(point.y));
+
+        if (comparisonHeadPoints.length > 0) {
+          drawPolynomialTrendline(ctx, comparisonHeadPoints, headDegree, '#808080', padding, drawingWidth, drawingHeight);
+        }
+      }
+
+      // Draw comparison efficiency points and curve
+      if (comparisonData.points.efficiencyPoints && comparisonData.points.efficiencyPoints.length > 0) {
+        const comparisonEffPoints = comparisonData.points.efficiencyPoints.map(point => {
+          const x = (Number(point.flow) * 100) / maxFlow;
+          const y = (Number(point.efficiency) * 100) / maxEfficiency;
+          return {
+            x: Math.max(0, Math.min(100, x)),
+            y: Math.max(0, Math.min(100, y))
+          };
+        }).filter(point => !isNaN(point.x) && !isNaN(point.y));
+
+        if (comparisonEffPoints.length > 0) {
+          drawPolynomialTrendline(ctx, comparisonEffPoints, efficiencyDegree, '#808080', padding, drawingWidth, drawingHeight);
+        }
+      }
+
+      // Draw comparison VFD points
+      if (comparisonData.points.vfdPoints && comparisonData.points.vfdPoints.length > 0) {
+        const comparisonVfdPoints = comparisonData.points.vfdPoints.map(point => {
+          const x = (Number(point.flow) * 100) / maxFlow;
+          const y = (Number(point.head) * 100) / maxHead;
+          return {
+            x: Math.max(0, Math.min(100, x)),
+            y: Math.max(0, Math.min(100, y))
+          };
+        }).filter(point => !isNaN(point.x) && !isNaN(point.y));
+
+        if (comparisonVfdPoints.length > 0) {
+          drawPolynomialTrendline(ctx, comparisonVfdPoints, 0, '#808080', padding, drawingWidth, drawingHeight, true);
+        }
+      }
+      
+      ctx.setLineDash([]); // Reset dash pattern
+    }
+
+    // Draw main case curves on top
+    ctx.lineWidth = 2; // Reset to normal width for main case
+    if (points.length > 0) {
+      drawPolynomialTrendline(ctx, points, headDegree, '#0000FF', padding, drawingWidth, drawingHeight);
+    }
+    if (efficiencyPoints.length > 0) {
+      drawPolynomialTrendline(ctx, efficiencyPoints, efficiencyDegree, '#FF0000', padding, drawingWidth, drawingHeight);
+    }
+    if (vfdPoints.length > 0) {
+      drawPolynomialTrendline(ctx, vfdPoints, 0, '#00AA00', padding, drawingWidth, drawingHeight, true);
+    }
   };
 
   useEffect(() => {
@@ -925,14 +1042,37 @@ const PumpCurveNew2: React.FC = () => {
     let newEfficiencyPoints = [...efficiencyPoints];
     let newVfdPoints = [...vfdPoints];
 
+    // Store actual values directly
     if (type === 'head') {
-      newPoints[index] = { x: newX, y: newY };
+      // Convert to percentage for canvas display
+      const xPercentage = (newX * 100) / maxFlow;
+      const yPercentage = (newY * 100) / maxHead;
+      newPoints[index] = { 
+        x: xPercentage, 
+        y: yPercentage,
+        actualFlow: newX,  // Store actual flow
+        actualHead: newY   // Store actual head
+      };
       setPoints(newPoints);
     } else if (type === 'efficiency') {
-      newEfficiencyPoints[index] = { x: newX, y: newY };
+      const xPercentage = (newX * 100) / maxFlow;
+      newEfficiencyPoints[index] = { 
+        x: xPercentage, 
+        y: newY,  // Efficiency is always in percentage
+        isEfficiency: true,
+        actualFlow: newX,   // Store actual flow
+        actualEfficiency: newY  // Store actual efficiency percentage
+      };
       setEfficiencyPoints(newEfficiencyPoints);
     } else if (type === 'vfd') {
-      newVfdPoints[index] = { x: newX, y: newY };
+      const xPercentage = (newX * 100) / maxFlow;
+      const yPercentage = (newY * 100) / maxHead;
+      newVfdPoints[index] = { 
+        x: xPercentage, 
+        y: yPercentage,
+        actualFlow: newX,  // Store actual flow
+        actualHead: newY   // Store actual head
+      };
       setVfdPoints(newVfdPoints);
     }
 
@@ -1029,7 +1169,8 @@ const PumpCurveNew2: React.FC = () => {
       maxValues: {
         head: maxHead,
         flow: maxFlow,
-        efficiency: maxEfficiency
+        efficiency: maxEfficiency,
+        rpm: maxRpm  // Add this line
       },
       equations: {
         head: {
@@ -1079,24 +1220,135 @@ const PumpCurveNew2: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      // Store the selected file name in sessionStorage
-      sessionStorage.setItem('pendingJsonFile', file.name);
-      
-      // Create a temporary form data and store the file content
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const content = event.target?.result;
-        if (typeof content === 'string') {
-          sessionStorage.setItem('tempPumpCurveData', content);
-          // Refresh the page
-          window.location.href = window.location.href;
-        }
+    if (!file) return;
+
+    try {
+      const content = await file.text();
+      const data = JSON.parse(content);
+
+      // Reset all states first
+      setPoints([]);
+      setEfficiencyPoints([]);
+      setVfdPoints([]);
+      setHistory([]);
+      setCurrentHistoryIndex(-1);
+      setBackgroundImage(null);
+      setImageOpacity(0.5);
+
+      // Prepare all new states
+      const newMaxValues = {
+        head: Number(data.maxValues?.head) || 100,
+        flow: Number(data.maxValues?.flow) || 100,
+        efficiency: Number(data.maxValues?.efficiency) || 100,
+        rpm: Number(data.maxValues?.rpm) || 1800
       };
-      reader.readAsText(file);
+
+      const newCaseInfo = {
+        caseName: data.caseInfo?.caseName || '',
+        projectName: data.caseInfo?.projectName || '',
+        stage: data.caseInfo?.stage || '수행',
+        date: data.caseInfo?.date || new Date().toISOString().split('T')[0],
+        pumpName: data.caseInfo?.pumpName || ''
+      };
+
+      const newDegrees = {
+        head: data.equations?.head?.degree >= 2 && data.equations?.head?.degree <= 4 
+          ? Number(data.equations.head.degree) 
+          : 4,
+        efficiency: data.equations?.efficiency?.degree >= 2 && data.equations?.efficiency?.degree <= 4 
+          ? Number(data.equations.efficiency.degree) 
+          : 4
+      };
+
+      // Convert points with actual values
+      const newPoints: Point[] = [];
+      const newEfficiencyPoints: Point[] = [];
+      const newVfdPoints: Point[] = [];
+
+      if (Array.isArray(data.points?.headPoints)) {
+        data.points.headPoints.forEach((point: DefaultDataPoint) => {
+          const flow = Number(point.flow);
+          const head = Number(point.head);
+          if (!isNaN(flow) && !isNaN(head)) {
+            newPoints.push({
+              x: (flow * 100) / newMaxValues.flow,
+              y: (head * 100) / newMaxValues.head,
+              actualFlow: flow,
+              actualHead: head
+            });
+          }
+        });
+      }
+
+      if (Array.isArray(data.points?.efficiencyPoints)) {
+        data.points.efficiencyPoints.forEach((point: DefaultDataPoint) => {
+          const flow = Number(point.flow);
+          const efficiency = Number(point.efficiency);
+          if (!isNaN(flow) && !isNaN(efficiency)) {
+            newEfficiencyPoints.push({
+              x: (flow * 100) / newMaxValues.flow,
+              y: efficiency,
+              isEfficiency: true,
+              actualFlow: flow,
+              actualEfficiency: efficiency
+            });
+          }
+        });
+      }
+
+      if (Array.isArray(data.points?.vfdPoints)) {
+        data.points.vfdPoints.forEach((point: DefaultDataPoint) => {
+          const flow = Number(point.flow);
+          const head = Number(point.head);
+          if (!isNaN(flow) && !isNaN(head)) {
+            newVfdPoints.push({
+              x: (flow * 100) / newMaxValues.flow,
+              y: (head * 100) / newMaxValues.head,
+              actualFlow: flow,
+              actualHead: head
+            });
+          }
+        });
+      }
+
+      // Create new history state
+      const newHistory = [{
+        points: newPoints,
+        efficiencyPoints: newEfficiencyPoints,
+        vfdPoints: newVfdPoints
+      }];
+
+      // Update all states in a single batch
+      ReactDOM.flushSync(() => {
+        // Set max values first
+        setMaxHead(newMaxValues.head);
+        setMaxFlow(newMaxValues.flow);
+        setMaxEfficiency(newMaxValues.efficiency);
+        setMaxRpm(newMaxValues.rpm);
+
+        // Set other states
+        setCaseInfo(newCaseInfo);
+        setHeadDegree(newDegrees.head);
+        setEfficiencyDegree(newDegrees.efficiency);
+        
+        // Set points and history
+        setPoints(newPoints);
+        setEfficiencyPoints(newEfficiencyPoints);
+        setVfdPoints(newVfdPoints);
+        setHistory(newHistory);
+        setCurrentHistoryIndex(0);
+
+        // Force canvas redraw
+        setCanvasKey(prev => prev + 1);
+      });
+
+    } catch (error) {
+      console.error('Error loading data:', error);
+      alert('데이터 로드 중 오류가 발생했습니다.');
     }
+
     // Reset the input
     e.target.value = '';
   };
@@ -1140,10 +1392,11 @@ const PumpCurveNew2: React.FC = () => {
 
         // Set max values
         if (data.maxValues && typeof data.maxValues === 'object') {
-          const { head = 100, flow = 100, efficiency = 100 } = data.maxValues;
+          const { head = 100, flow = 100, efficiency = 100, rpm = 1800 } = data.maxValues;
           setMaxHead(Number(head) || 100);
           setMaxFlow(Number(flow) || 100);
           setMaxEfficiency(Number(efficiency) || 100);
+          setMaxRpm(Number(rpm) || 1800);
         }
 
         // Set polynomial degrees
@@ -1495,21 +1748,105 @@ const PumpCurveNew2: React.FC = () => {
     setCurrentHistoryIndex(currentHistoryIndex + 1);
   };
 
+  // Add loadComparisonCase function
+  const loadComparisonCase = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const content = event.target?.result;
+        if (typeof content === 'string') {
+          const data = JSON.parse(content);
+          
+          // Transform the data points to use actual values
+          if (data.points) {
+            // Transform head points
+            if (data.points.headPoints) {
+              data.points.headPoints = data.points.headPoints.map((point: DefaultDataPoint) => ({
+                flow: Number(point.flow),
+                head: Number(point.head)
+              }));
+            }
+            
+            // Transform efficiency points
+            if (data.points.efficiencyPoints) {
+              data.points.efficiencyPoints = data.points.efficiencyPoints.map((point: DefaultDataPoint) => ({
+                flow: Number(point.flow),
+                efficiency: Number(point.efficiency)
+              }));
+            }
+            
+            // Transform VFD points
+            if (data.points.vfdPoints) {
+              data.points.vfdPoints = data.points.vfdPoints.map((point: DefaultDataPoint) => ({
+                flow: Number(point.flow),
+                head: Number(point.head)
+              }));
+            }
+          }
+          
+          setComparisonData(data);
+        }
+      } catch (error) {
+        console.error('Error parsing comparison case:', error);
+        alert('비교 케이스 로드 중 오류가 발생했습니다.');
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  // Update useEffect for handling range changes
+  useEffect(() => {
+    // Store current values as previous before updating
+    const prevMaxFlow = prevMaxFlowRef.current;
+    const prevMaxHead = prevMaxHeadRef.current;
+    
+    // Only update canvas positions when range changes, keeping actual values intact
+    const newPoints = points.map(point => ({
+      ...point,
+      x: (point.actualFlow || (point.x * prevMaxFlow / 100)) * 100 / maxFlow,
+      y: (point.actualHead || (point.y * prevMaxHead / 100)) * 100 / maxHead
+    }));
+    setPoints(newPoints);
+
+    const newEfficiencyPoints = efficiencyPoints.map(point => ({
+      ...point,
+      x: (point.actualFlow || (point.x * prevMaxFlow / 100)) * 100 / maxFlow,
+      y: point.actualEfficiency || point.y,  // Keep efficiency percentage as is
+      isEfficiency: true,
+      actualFlow: point.actualFlow || (point.x * prevMaxFlow / 100),
+      actualEfficiency: point.actualEfficiency || point.y
+    }));
+    setEfficiencyPoints(newEfficiencyPoints);
+
+    const newVfdPoints = vfdPoints.map(point => ({
+      ...point,
+      x: (point.actualFlow || (point.x * prevMaxFlow / 100)) * 100 / maxFlow,
+      y: (point.actualHead || (point.y * prevMaxHead / 100)) * 100 / maxHead
+    }));
+    setVfdPoints(newVfdPoints);
+
+    // Update refs with current values
+    prevMaxFlowRef.current = maxFlow;
+    prevMaxHeadRef.current = maxHead;
+  }, [maxFlow, maxHead, maxEfficiency, points, efficiencyPoints, vfdPoints]);
+
   return (
     <Card className="max-w-[1800px] mx-auto">
       <CardContent className="p-4 bg-gray-300">
         <div className="space-y-2">
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex-1 min-w-[200px] max-w-[400px]">
               <div className="flex items-center gap-2">
-              <Label htmlFor="caseName" className="text-xs">Case 명:</Label>
+                <Label htmlFor="caseName" className="text-xs whitespace-nowrap">Case 명:</Label>
                 <Input
                   id="caseName"
                   value={caseInfo.caseName}
                   readOnly
-                className="flex-1 bg-yellow-200 h-8 w-96 text-xs"
+                  className="flex-1 bg-yellow-200 h-8 text-xs"
                 />
               </div>
-              <div className="flex items-center gap-2">
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
               <div className="relative">
                 <input
                   type="file"
@@ -1524,143 +1861,122 @@ const PumpCurveNew2: React.FC = () => {
                   variant="outline"
                   size="sm"
                   onClick={() => document.getElementById('json-file-input')?.click()}
-                  className="flex items-center gap-2 h-8 bg-red-50 hover:bg-red-100 text-xs"
+                  className="flex items-center gap-2 h-8 bg-red-50 hover:bg-red-100 text-xs whitespace-nowrap"
                 >
                   <FileUp className="h-4 w-4" />
-                  Load JSON
+                  Load Main Case
                 </Button>
               </div>
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setShowManual(true)}
-                className="flex items-center gap-2 h-8 text-xs bg-red-50 hover:bg-red-100 text-xs"
-                title="Show Manual"
+                onClick={handleClearAllPoints}
+                className="flex items-center gap-2 h-8 bg-red-50 hover:bg-red-100 text-xs whitespace-nowrap"
+                title="단축키: CTRL+X"
               >
-                <FileText className="h-4 w-4" />
-                Manual
+                <Trash2 className="h-4 w-4" />
+                Clear Main
               </Button>
+              <div className="relative">
+                <input
+                  type="file"
+                  accept=".json"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      loadComparisonCase(file);
+                    }
+                    e.target.value = '';
+                  }}
+                  className="hidden"
+                  id="comparison-file-input"
+                  title="Select JSON file to load as comparison"
+                  aria-label="Select JSON file to load as comparison"
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => document.getElementById('comparison-file-input')?.click()}
+                  className="flex items-center gap-2 h-8 bg-red-50 hover:bg-red-100 text-xs whitespace-nowrap"
+                >
+                  <FileUp className="h-4 w-4" />
+                  Load Comparison
+                </Button>
+              </div>
+              {comparisonData && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setComparisonData(null);
+                    const canvas = canvasRef.current;
+                    if (canvas) {
+                      const ctx = canvas.getContext('2d');
+                      if (ctx) {
+                        requestAnimationFrame(() => {
+                          drawCanvas(ctx, canvas.width, canvas.height);
+                        });
+                      }
+                    }
+                  }}
+                  className="flex items-center gap-2 h-8 bg-red-50 hover:bg-red-100 text-xs whitespace-nowrap"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Clear Comparison
+                </Button>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" onClick={() => setShowManual(true)}>
+                  <FileText className="w-4 h-4 mr-2" />
+                  Manual
+                </Button>
+                {/* Other buttons */}
+              </div>
             </div>
           </div>
 
-          <Dialog open={showManual} onOpenChange={setShowManual}>
-            <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
-              <DialogHeader>
-                <DialogTitle>PUMP CURVE EDITOR 사용방법.</DialogTitle>
-              </DialogHeader>
-              <div className="space-y-4">
-                <div>
-                  <h3 className="font-semibold mb-2">1. 기본 정보 입력</h3>
-                  <ul className="list-disc pl-5 space-y-1">
-                    <li>PJT, 단계, Date, Pump Name을 입력하면 자동으로 Case 명이 생성됩니다.</li>
-                    <li>Load JSON 버튼을 통해 저장한 데이터를 불러올 수 있습니다.</li>
-                  </ul>
-                </div>
-
-                <div>
-                  <h3 className="font-semibold mb-2">2. 그래프 범위 설정</h3>
-                  <ul className="list-disc pl-5 space-y-1">
-                    <li>TDH Range: Head 값의 최대 범위를 설정합니다.</li>
-                    <li>Flow Range: Flow 값의 최대 범위를 설정합니다.</li>
-                    <li>Eff. Range: Efficiency 값의 최대 범위를 설정합니다.</li>
-                  </ul>
-                </div>
-
-                <div>
-                  <h3 className="font-semibold mb-2">3. 포인트 입력 방법</h3>
-                  <ul className="list-disc pl-5 space-y-1">
-                    <li>Record mode에서 Head, Efficiency 또는 Operation point를 선택합니다.</li>
-                    <li>그래프 영역을 클릭하여 포인트를 추가합니다.</li>
-                    <li>포인트를 드래그하여 위치를 조정할 수 있습니다.</li>
-                    <li>우클릭으로 포인트를 삭제할 수 있습니다.</li>
-                    <li>테이블에서 직접 값을 입력하거나 수정할 수 있습니다.</li>
-                    <li>Ctrl+z, Ctrl+y로 이전, 이후 상태로 돌아갈 수 있습니다.</li>
-                  </ul>
-                </div>
-
-                <div>
-                  <h3 className="font-semibold mb-2">4. 다항식 차수 설정</h3>
-                  <ul className="list-disc pl-5 space-y-1">
-                    <li>Head와 Efficiency 각각 2차, 3차, 4차 다항식을 선택할 수 있습니다.</li>
-                    <li>포인트가 다항식 차수보다 여러개 이상일 때 추세선 곡선이 그려집니다.</li>
-                  </ul>
-                </div>
-
-                <div>
-                  <h3 className="font-semibold mb-2">5. 배경 이미지 기능</h3>
-                  <ul className="list-disc pl-5 space-y-1">
-                    <li>Window key +  Shift + c로 캡처한 이미지를 그래프 영역에 Ctrl+V 하여 배경 이미지를 추가할 수 있습니다.</li>
-                    <li>Background Opacity로 이미지 투명도를 조절할 수 있습니다.</li>
-                  </ul>
-                </div>
-
-                <div>
-                  <h3 className="font-semibold mb-2">6. 데이터 내보내기</h3>
-                  <ul className="list-disc pl-5 space-y-1">
-                    <li>Copy to Clipboard: 테이블 형식으로 데이터를 복사합니다.</li>
-                    <li>Export JSON: 모든 데이터를 JSON 파일로 저장합니다.</li>
-                    <li>다항식 방정식을 개별적으로 복사할 수 있습니다.</li>
-                  </ul>
-                </div>
-                <div>
-                <h3 className="font-semibold mb-2">%%% 파놉토에 "Pump Curve Editor"로 검색하시면 설명 영상이 있습니다.%%%%</h3>
-                 <h3 className="font-semibold mb-2">%%% 기타 문의사항은 jihun.choi@doosan.com으로 문의 바랍니다. %%%%</h3>
-                </div>
-              </div>
-            </DialogContent>
-          </Dialog>
-          <hr className="my-6 border-t border-gray-700" />
- 
- 
- 
- 
- 
- 
- 
- 
- 
-          <div className="flex justify-between items-center bg-gray-300">
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4   bg-gray-300 rounded-lg flex-grow max-w-[1000px]">
-              <div className="flex items-center gap-2">
-                <Label htmlFor="projectName" className="text-xs">PJT:</Label>
+          <div className="flex flex-wrap justify-between items-center bg-gray-300">
+            <div className="flex flex-wrap gap-2 flex-grow">
+              <div className="flex items-center gap-2 min-w-[150px]">
+                <Label htmlFor="projectName" className="text-xs whitespace-nowrap">PJT:</Label>
                 <Input
                   id="projectName"
                   value={caseInfo.projectName}
                   onChange={(e) => setCaseInfo(prev => ({ ...prev, projectName: e.target.value }))}
-                  className="flex-1 bg-white h-8 max-w-40 min-w-30 text-xs"
+                  className="flex-1 bg-white h-8 min-w-[100px] text-xs"
                 />
               </div>
-              <div className="flex items-center gap-2">
-                <Label htmlFor="stage" className="text-xs">단계:</Label>
+              <div className="flex items-center gap-2 min-w-[150px]">
+                <Label htmlFor="stage" className="text-xs whitespace-nowrap">단계:</Label>
                 <select
                   id="stage"
                   title="단계 선택"
                   value={caseInfo.stage}
                   onChange={(e) => setCaseInfo(prev => ({ ...prev, stage: e.target.value }))}
-                  className="flex-1 text-xs rounded-md border border-input bg-background px-3 py-2 h-8.5 max-w-40 bg-white"
+                  className="flex-1 text-xs rounded-md border border-input bg-background px-3 py-2 h-8.5 min-w-[100px] bg-white"
                 >
                   <option value="수행">수행</option>
                   <option value="견적">견적</option>
                   <option value="기타">기타</option>
                 </select>
               </div>
-              <div className="flex items-center gap-2">
-                <Label htmlFor="date" className="text-xs">Date:</Label>
+              <div className="flex items-center gap-2 min-w-[150px]">
+                <Label htmlFor="date" className="text-xs whitespace-nowrap">Date:</Label>
                 <Input
                   id="date"
                   type="date"
                   value={caseInfo.date}
                   onChange={(e) => setCaseInfo(prev => ({ ...prev, date: e.target.value }))}
-                  className="flex-1 bg-white h-9 max-w-40 text-xs"
+                  className="flex-1 bg-white h-9 min-w-[120px] text-xs"
                 />
               </div>
-              <div className="flex items-center gap-2">
-                <Label htmlFor="pumpName" className="text-xs">Pump Name:</Label>
+              <div className="flex items-center gap-2 min-w-[150px]">
+                <Label htmlFor="pumpName" className="text-xs whitespace-nowrap">Pump Name:</Label>
                 <Input
                   id="pumpName"
                   value={caseInfo.pumpName}
                   onChange={(e) => setCaseInfo(prev => ({ ...prev, pumpName: e.target.value }))}
-                  className="flex-1 bg-white h-9 max-w-40 text-xs"
+                  className="flex-1 bg-white h-9 min-w-[100px] text-xs"
                 />
             </div>
             </div>
@@ -1696,6 +2012,16 @@ const PumpCurveNew2: React.FC = () => {
                 type="number"
                 value={maxEfficiency}
                 onChange={(e) => setMaxEfficiency(parseFloat(e.target.value) || 100)}
+                className="w-24 h-8 bg-white text-xs"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <Label htmlFor="maxRpm" className="text-xs">RPM(100%):</Label>
+              <Input
+                id="maxRpm"
+                type="number"
+                value={maxRpm}
+                onChange={(e) => setMaxRpm(parseFloat(e.target.value) || 1800)}
                 className="w-24 h-8 bg-white text-xs"
               />
             </div>
@@ -1903,16 +2229,6 @@ const PumpCurveNew2: React.FC = () => {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={handleClearAllPoints}
-                  className="flex items-center gap-2 bg-red-50 hover:bg-red-100 text-xs"
-                  title="단축키: CTRL+X"
-                >
-                  <Trash2 className="h-4 w-4" />
-                  All Points Clear
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
                   onClick={() => handleCopyWithEffect(handleCopyAllPoints, 'copy-points')}
                   className={`flex items-center gap-2 transition-colors duration-200 bg-red-50 hover:bg-red-100 text-xs ${
                     copyEffect === 'copy-points' ? 'bg-green-100 text-green-700 border-gray-400' : ''
@@ -1930,8 +2246,7 @@ const PumpCurveNew2: React.FC = () => {
                   <Download className="h-4 w-4" />
                   Export JSON
                 </Button>
-            </div>
-
+              </div>
             </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
             <div className="max-w-[800px] rounded-lg">
@@ -1958,7 +2273,7 @@ const PumpCurveNew2: React.FC = () => {
                       <td className="border p-1 text-left">
                         <input
                             type="number"
-                          value={((point.x * maxFlow) / 100).toFixed(1)}
+                          value={point.actualFlow?.toFixed(1) || ((point.x * maxFlow) / 100).toFixed(1)}
                           onChange={(e) => handleEditPoint(index, 'head', (parseFloat(e.target.value) * 100) / maxFlow, point.y)}
                           className="w-14 h-6"
                           title={`Edit flow for head point ${index + 1}`}
@@ -1968,7 +2283,7 @@ const PumpCurveNew2: React.FC = () => {
                       <td className="border p-1 text-left">
                         <input
                             type="number"
-                          value={((point.y * maxHead) / 100).toFixed(1)}
+                          value={point.actualHead?.toFixed(1) || ((point.y * maxHead) / 100).toFixed(1)}
                           onChange={(e) => handleEditPoint(index, 'head', point.x, (parseFloat(e.target.value) * 100) / maxHead)}
                           className="w-14 h-6"
                           title={`Edit head for head point ${index + 1}`}
@@ -2015,7 +2330,7 @@ const PumpCurveNew2: React.FC = () => {
                       <td className="border p-1 text-left">
                         <input
                             type="number"
-                          value={((point.x * maxFlow) / 100).toFixed(1)}
+                          value={point.actualFlow?.toFixed(1) || ((point.x * maxFlow) / 100).toFixed(1)}
                           onChange={(e) => handleEditPoint(index, 'efficiency', (parseFloat(e.target.value) * 100) / maxFlow, point.y)}
                           className="w-14 h-6"
                           title={`Edit flow for efficiency point ${index + 1}`}
@@ -2052,12 +2367,13 @@ const PumpCurveNew2: React.FC = () => {
               <h3 className="text-xs text-green-700 font-semibold">Operating Points</h3>
               <table className="w-full border-collapse table-fixed bg-white">
                 <colgroup>
-                  <col className="w-[7%]" />
+                  <col className="w-[5%]" />
                   <col className="w-[15%]" />
-                  <col className="w-[15%]" />
-                  <col className="w-[15%]" />
-                  <col className="w-[15%]" />
+                  <col className="w-[12%]" />
                   <col className="w-[10%]" />
+                  <col className="w-[12%]" />
+                  <col className="w-[12%]" />
+                  <col className="w-[5%]" />
                 </colgroup>
                 <thead>
                   <tr>
@@ -2065,13 +2381,15 @@ const PumpCurveNew2: React.FC = () => {
                     <th className="border p-1 text-left">Flow(m³/h)</th>
                     <th className="border p-1 text-left">TDH(m)</th>
                     <th className="border p-1 text-left">Speed(%)</th>
-                    <th className="border p-1 text-left">Efficiency(%)</th>
+                    <th className="border p-1 text-left">Speed(rpm)</th>
+                    <th className="border p-1 text-left">Eff.(%)</th>
                     <th className="border p-1 text-left">Del.</th>
                   </tr>
                 </thead>
                 <tbody>
                   {sortedVfdPoints.map((point, index) => {
                     const { speedRatio, vfdEfficiency } = calculateVfdEfficiency(point);
+                    const rpm = (speedRatio * maxRpm) / 100;
                     
                     return (
                       <tr key={index}>
@@ -2079,7 +2397,7 @@ const PumpCurveNew2: React.FC = () => {
                         <td className="border p-1 text-left">
                           <input
                             type="number"
-                            value={((point.x * maxFlow) / 100).toFixed(1)}
+                            value={point.actualFlow?.toFixed(1) || ((point.x * maxFlow) / 100).toFixed(1)}
                             onChange={(e) => handleEditPoint(index, 'vfd', (parseFloat(e.target.value) * 100) / maxFlow, point.y)}
                             className="w-14 h-6"
                             title={`Edit flow for VFD point ${index + 1}`}
@@ -2089,7 +2407,7 @@ const PumpCurveNew2: React.FC = () => {
                         <td className="border p-1 text-left">
                           <input
                             type="number"
-                            value={((point.y * maxHead) / 100).toFixed(1)}
+                            value={point.actualHead?.toFixed(1) || ((point.y * maxHead) / 100).toFixed(1)}
                             onChange={(e) => handleEditPoint(index, 'vfd', point.x, (parseFloat(e.target.value) * 100) / maxHead)}
                             className="w-14 h-6"
                             title={`Edit head for VFD point ${index + 1}`}
@@ -2098,6 +2416,9 @@ const PumpCurveNew2: React.FC = () => {
                         </td>
                         <td className="border p-1 text-left">
                           {speedRatio.toFixed(1)}
+                        </td>
+                        <td className="border p-1 text-left">
+                          {rpm.toFixed(0)}
                         </td>
                         <td className="border p-1 text-left">
                           {vfdEfficiency.toFixed(1)}
@@ -2123,6 +2444,9 @@ const PumpCurveNew2: React.FC = () => {
               </div>
             </div>
           </CardContent>
+
+      {/* Manual component */}
+      <Manual open={showManual} onOpenChange={setShowManual} />
     </Card>
   );
 };
