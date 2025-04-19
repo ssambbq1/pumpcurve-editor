@@ -10,22 +10,25 @@ import Manual from '@/components/Manual';
 import ReactDOM from 'react-dom';
 
 interface Point {
-  x: number;
-  y: number;
-  isEfficiency?: boolean;
-  actualFlow?: number;
+  actualFlow: number;
   actualHead?: number;
-  actualEfficiency?: number;  // Add this line
+  actualEfficiency?: number;
+  isEfficiency?: boolean;
 }
 
 interface BepPoint {
-  flow: number;
-  head: number;
-  efficiency: number;
+  actualFlow: number;
+  actualHead: number;
+  actualEfficiency: number;
 }
 
 interface DefaultDataPoint {
-  flow: number | string;
+  actualFlow: number | string;
+  actualHead?: number | string;
+  actualEfficiency?: number | string;
+  speed?: number | string;
+  // Add legacy properties for backward compatibility
+  flow?: number | string;
   head?: number | string;
   efficiency?: number | string;
 }
@@ -41,9 +44,9 @@ interface CaseInfo {
 interface LoadedData {
   caseInfo: CaseInfo;  // Change from optional to required and use CaseInfo interface
   maxValues?: {
-    head?: number;
-    flow?: number;
-    efficiency?: number;
+    actualHead?: number;
+    actualFlow?: number;
+    actualEfficiency?: number;
     rpm?: number;  // Add this line
   };
   equations?: {
@@ -62,9 +65,9 @@ interface LoadedData {
     vfdPoints?: DefaultDataPoint[];
   };
   bepPoint?: {
-    flow: string;
-    head: string;
-    efficiency: string;
+    actualFlow: string;
+    actualHead: string;
+    actualEfficiency: string;
   };
 }
 
@@ -76,9 +79,8 @@ interface HistoryState {
 
 interface DraggedPoint {
   index: number;
-  field: string;
-  x: number;
-  type: 'head' | 'efficiency' | 'vfd';
+  field: 'efficiency' | 'head';
+  type: string;
 }
 
 interface ComparisonData {
@@ -88,9 +90,9 @@ interface ComparisonData {
     vfdPoints?: DefaultDataPoint[];
   };
   maxValues?: {
-    head?: number;
-    flow?: number;
-    efficiency?: number;
+    actualHead?: number;
+    actualFlow?: number;
+    actualEfficiency?: number;
   };
 }
 
@@ -110,7 +112,7 @@ const PumpCurveNew2: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [headEquation, setHeadEquation] = useState<string>('');
   const [efficiencyEquation, setEfficiencyEquation] = useState<string>('');
-  const [caseInfo, setCaseInfo] = useState<CaseInfo>({  // Add type annotation
+  const [caseInfo, setCaseInfo] = useState<CaseInfo>({
     caseName: '',
     projectName: '',
     stage: '수행',
@@ -122,19 +124,19 @@ const PumpCurveNew2: React.FC = () => {
   const [showManual, setShowManual] = useState(false);
   const [copyEffect, setCopyEffect] = useState<string>('');
   const [canvasKey, setCanvasKey] = useState<number>(0);
-  const [recordMode, setRecordMode] = useState<'head' | 'efficiency' | 'vfd'>('head');
   const [history, setHistory] = useState<HistoryState[]>([]);
   const [currentHistoryIndex, setCurrentHistoryIndex] = useState<number>(-1);
   const [comparisonData, setComparisonData] = useState<ComparisonData | null>(null);
-  const [maxRpm, setMaxRpm] = useState<number>(1800);
+  const [maxRpm, setMaxRpm] = useState<number>(100);
+  const [tempInputValues, setTempInputValues] = useState<{[key: string]: string}>({});
 
   // Add refs for previous range values
   const prevMaxFlowRef = useRef(maxFlow);
   const prevMaxHeadRef = useRef(maxHead);
 
-  const sortedPoints = [...points].sort((a, b) => a.x - b.x);
-  const sortedEfficiencyPoints = [...efficiencyPoints].sort((a, b) => a.x - b.x);
-  const sortedVfdPoints = [...vfdPoints].sort((a, b) => a.x - b.x);
+  const sortedPoints = [...points].sort((a, b) => a.actualFlow - b.actualFlow);
+  const sortedEfficiencyPoints = [...efficiencyPoints].sort((a, b) => a.actualFlow - b.actualFlow);
+  const sortedVfdPoints = [...vfdPoints].sort((a, b) => a.actualFlow - b.actualFlow);
 
   const calculatePolynomialCoefficients = (xValues: number[], yValues: number[], degree: number) => {
     const X: number[][] = [];
@@ -202,12 +204,13 @@ const PumpCurveNew2: React.FC = () => {
     return solution;
   };
 
-  const calculateActualPolynomialCoefficients = (points: Point[], degree: number, maxX: number, maxY: number) => {
+  const calculateActualPolynomialCoefficients = (points: Point[], degree: number) => {
     if (points.length < 2) return [];
 
+    const isEfficiencyPoints = points[0].isEfficiency;
     const actualPoints = points.map(point => ({
-      x: (point.x * maxX) / 100,
-      y: (point.y * maxY) / 100,
+      x: point.actualFlow,
+      y: isEfficiencyPoints ? point.actualEfficiency! : point.actualHead!
     }));
 
     const n = actualPoints.length;
@@ -250,79 +253,79 @@ const PumpCurveNew2: React.FC = () => {
     drawingHeight: number,
     isOpHead: boolean = false
   ) => {
-    if (points.length === 0) return;
+    if (points.length < 2) return;
 
-    const isEfficiencyPoints = points[0].isEfficiency;
+    // Extract x and y values for coefficient calculation using actual values
+    const xValues = points.map(point => point.actualFlow);
+    const yValues = points.map(point => 
+      point.isEfficiency 
+        ? point.actualEfficiency!
+        : point.actualHead!
+    );
 
-    // Convert percentage points to actual values
-    const actualPoints = points.map(point => ({
-      x: point.actualFlow || (point.x * maxFlow) / 100,  // Use actual flow if available
-      y: isEfficiencyPoints ? point.y : (point.actualHead || (point.y * maxHead) / 100),  // Keep efficiency as %, convert head to actual
-      isEfficiency: point.isEfficiency
-    }));
+    // Calculate coefficients using actual values
+    const coefficients = calculatePolynomialCoefficients(xValues, yValues, degree);
 
     // Draw points
-    actualPoints.forEach(point => {
+    points.forEach(point => {
       // Convert actual values to canvas coordinates
-      const x = padding.left + ((point.x / maxFlow) * drawingWidth);
-      const y = padding.top + (1 - (point.y / (isEfficiencyPoints ? 100 : maxHead))) * drawingHeight;
+      const x = padding.left + (point.actualFlow / maxFlow) * drawingWidth;
+      const y = padding.top + (1 - (point.isEfficiency ? point.actualEfficiency! : point.actualHead!) / 
+        (point.isEfficiency ? maxEfficiency : maxHead)) * drawingHeight;
 
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.arc(x, y, isOpHead ? 6 : 4, 0, 2 * Math.PI);
       if (isOpHead) {
-        // Draw white border
-        ctx.strokeStyle = 'white';
-        ctx.lineWidth = 1;
-        ctx.stroke();
-        
-        // Draw crosshair
-        const crossSize = 8;
+        // Draw cross for operation points
+        const crossSize = 6;
         ctx.beginPath();
         ctx.strokeStyle = color;
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 2;
+        // Horizontal line
         ctx.moveTo(x - crossSize, y);
         ctx.lineTo(x + crossSize, y);
+        // Vertical line
         ctx.moveTo(x, y - crossSize);
         ctx.lineTo(x, y + crossSize);
         ctx.stroke();
+      } else {
+        // Draw circle for head and efficiency points
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(x, y, 4, 0, 2 * Math.PI);
+        ctx.fill();
       }
-      ctx.fill();
     });
 
     // Only draw trendline if we have enough points and not opHead
     if (points.length <= degree || isOpHead) return;
 
-    // Calculate polynomial coefficients using actual values
-    const xValues = actualPoints.map(p => p.x);
-    const yValues = actualPoints.map(p => p.y);
-    const coefficients = calculatePolynomialCoefficients(xValues, yValues, degree);
-
     // Draw curve
     ctx.beginPath();
     ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
 
     const maxFlowPoint = Math.max(...xValues);
-    const stepSize = maxFlow / 200; // Increase number of points for smoother curve
+    const stepSize = maxFlowPoint / 200;
 
+    let firstPoint = true;
     for (let flow = 0; flow <= maxFlowPoint; flow += stepSize) {
-      const y = coefficients.reduce((acc, coeff, index) => acc + coeff * Math.pow(flow, index), 0);
+      let y = 0;
+      for (let i = 0; i < coefficients.length; i++) {
+        y += coefficients[i] * Math.pow(flow, i);
+      }
       
-      // Skip if y value is outside reasonable range
-      if (isEfficiencyPoints && (y < 0 || y > 100)) continue;
-      if (!isEfficiencyPoints && (y < 0 || y > maxHead * 1.2)) continue;
+      if (points[0].isEfficiency && (y < 0 || y > maxEfficiency)) continue;
+      if (!points[0].isEfficiency && (y < 0 || y > maxHead * 1.2)) continue;
 
-      // Convert to canvas coordinates
       const canvasX = padding.left + (flow / maxFlow) * drawingWidth;
-      const canvasY = padding.top + (1 - (y / (isEfficiencyPoints ? 100 : maxHead))) * drawingHeight;
+      const canvasY = padding.top + (1 - y / (points[0].isEfficiency ? maxEfficiency : maxHead)) * drawingHeight;
       
-      if (flow === 0) {
+      if (firstPoint) {
         ctx.moveTo(canvasX, canvasY);
+        firstPoint = false;
       } else {
         ctx.lineTo(canvasX, canvasY);
       }
     }
-
     ctx.stroke();
   };
 
@@ -536,8 +539,8 @@ const PumpCurveNew2: React.FC = () => {
     const bep = findBepPoint(points, efficiencyPoints);
     if (bep) {
       // Convert BEP point to percentage coordinates
-      const bepFlowPercent = (bep.flow / maxFlow) * 100;
-      const bepHeadPercent = (bep.head / maxHead) * 100;
+      const bepFlowPercent = (bep.actualFlow / maxFlow) * 100;
+      const bepHeadPercent = (bep.actualHead / maxHead) * 100;
 
       // Draw BEP line (quadratic curve through origin and BEP)
       ctx.beginPath();
@@ -549,7 +552,11 @@ const PumpCurveNew2: React.FC = () => {
       const a = bepHeadPercent / (bepFlowPercent * bepFlowPercent);
       
       // Calculate head polynomial coefficients for TDH curve
-      const headCoefficients = calculatePolynomialCoefficients(points.map(p => p.x), points.map(p => p.y), headDegree);
+      const headCoefficients = calculatePolynomialCoefficients(
+        points.map(p => (p.actualFlow * 100) / maxFlow), 
+        points.map(p => (p.actualHead! * 100) / maxHead), 
+        headDegree
+      );
       
       // Draw curve up to intersection with TDH curve
       let prevX = 0;
@@ -604,13 +611,17 @@ const PumpCurveNew2: React.FC = () => {
     // Draw quadratic curves through second and last operating points
     if (points.length > 1) {
       // Calculate head polynomial coefficients for TDH curve once
-      const headCoefficients = calculatePolynomialCoefficients(points.map(p => p.x), points.map(p => p.y), headDegree);
+      const headCoefficients = calculatePolynomialCoefficients(
+        points.map(p => (p.actualFlow * 100) / maxFlow), 
+        points.map(p => (p.actualHead! * 100) / maxHead), 
+        headDegree
+      );
 
       // Second operating point curve (blue)
       const secondPoint = points[1];
-      const secondPointX = (secondPoint.x * maxFlow) / 100;
-      const secondPointY = (secondPoint.y * maxHead) / 100;
-      const a1 = secondPointY / (secondPointX * secondPointX);
+      const secondPointFlow = secondPoint.actualFlow;
+      const secondPointHead = secondPoint.actualHead!;
+      const a1 = secondPointHead / (secondPointFlow * secondPointFlow);
 
       ctx.beginPath();
       ctx.strokeStyle = '#0000FF';
@@ -654,11 +665,11 @@ const PumpCurveNew2: React.FC = () => {
       ctx.stroke();
 
       // Draw "Min Flow" label
-      const labelX1 = secondPoint.x * 0.7;
-      const labelY1 = (a1 * (labelX1 * maxFlow / 100) * (labelX1 * maxFlow / 100) * 100) / maxHead;
+      const labelFlow1 = secondPoint.actualFlow * 0.7;
+      const labelHead1 = a1 * labelFlow1 * labelFlow1;
       
-      const labelCanvasX1 = padding.left + (labelX1) * drawingWidth / 100;
-      const labelCanvasY1 = padding.top + (1 - labelY1 / 100) * drawingHeight - 10;
+      const labelCanvasX1 = padding.left + (labelFlow1 * 100 / maxFlow) * drawingWidth / 100;
+      const labelCanvasY1 = padding.top + (1 - labelHead1 * 100 / maxHead / 100) * drawingHeight - 10;
 
       ctx.save();
       ctx.fillStyle = '#0000FF';
@@ -669,13 +680,13 @@ const PumpCurveNew2: React.FC = () => {
 
       // Find point with maximum flow
       const maxFlowPoint = points.reduce((max, current) => 
-        current.x > max.x ? current : max
+        current.actualFlow > max.actualFlow ? current : max
       , points[0]);
 
       // Maximum flow point curve (blue)
-      const maxFlowPointX = (maxFlowPoint.x * maxFlow) / 100;
-      const maxFlowPointY = (maxFlowPoint.y * maxHead) / 100;
-      const a2 = maxFlowPointY / (maxFlowPointX * maxFlowPointX);
+      const maxFlowPointFlow = maxFlowPoint.actualFlow;
+      const maxFlowPointHead = maxFlowPoint.actualHead!;
+      const a2 = maxFlowPointHead / (maxFlowPointFlow * maxFlowPointFlow);
 
       ctx.beginPath();
       ctx.strokeStyle = '#0000FF';
@@ -716,11 +727,11 @@ const PumpCurveNew2: React.FC = () => {
       ctx.setLineDash([]);
 
       // Draw "Max Flow" label
-      const labelX2 = maxFlowPoint.x * 0.7;
-      const labelY2 = (a2 * (labelX2 * maxFlow / 100) * (labelX2 * maxFlow / 100) * 100) / maxHead;
+      const labelFlow2 = maxFlowPoint.actualFlow * 0.7;
+      const labelHead2 = a2 * labelFlow2 * labelFlow2;
       
-      const labelCanvasX2 = padding.left + (labelX2) * drawingWidth / 100;
-      const labelCanvasY2 = padding.top + (1 - labelY2 / 100) * drawingHeight - 10;
+      const labelCanvasX2 = padding.left + (labelFlow2 * 100 / maxFlow) * drawingWidth / 100;
+      const labelCanvasY2 = padding.top + (1 - labelHead2 * 100 / maxHead / 100) * drawingHeight - 10;
 
       ctx.save();
       ctx.fillStyle = '#0000FF';
@@ -738,14 +749,10 @@ const PumpCurveNew2: React.FC = () => {
 
       // Draw comparison head points and curve
       if (comparisonData.points.headPoints && comparisonData.points.headPoints.length > 0) {
-        const comparisonHeadPoints = comparisonData.points.headPoints.map(point => {
-          const x = (Number(point.flow) * 100) / maxFlow;
-          const y = (Number(point.head) * 100) / maxHead;
-          return {
-            x: Math.max(0, Math.min(100, x)),
-            y: Math.max(0, Math.min(100, y))
-          };
-        }).filter(point => !isNaN(point.x) && !isNaN(point.y));
+        const comparisonHeadPoints = comparisonData.points.headPoints.map(point => ({
+          actualFlow: Math.max(0, Math.min(maxFlow, Number(point.actualFlow))),
+          actualHead: Math.max(0, Math.min(maxHead, Number(point.actualHead)))
+        })).filter(point => !isNaN(point.actualFlow) && !isNaN(point.actualHead));
 
         if (comparisonHeadPoints.length > 0) {
           drawPolynomialTrendline(ctx, comparisonHeadPoints, headDegree, '#808080', padding, drawingWidth, drawingHeight);
@@ -754,14 +761,11 @@ const PumpCurveNew2: React.FC = () => {
 
       // Draw comparison efficiency points and curve
       if (comparisonData.points.efficiencyPoints && comparisonData.points.efficiencyPoints.length > 0) {
-        const comparisonEffPoints = comparisonData.points.efficiencyPoints.map(point => {
-          const x = (Number(point.flow) * 100) / maxFlow;
-          const y = (Number(point.efficiency) * 100) / maxEfficiency;
-          return {
-            x: Math.max(0, Math.min(100, x)),
-            y: Math.max(0, Math.min(100, y))
-          };
-        }).filter(point => !isNaN(point.x) && !isNaN(point.y));
+        const comparisonEffPoints = comparisonData.points.efficiencyPoints.map(point => ({
+          actualFlow: Math.max(0, Math.min(maxFlow, Number(point.actualFlow))),
+          actualEfficiency: Math.max(0, Math.min(maxEfficiency, Number(point.actualEfficiency))),
+          isEfficiency: true
+        })).filter(point => !isNaN(point.actualFlow) && !isNaN(point.actualEfficiency));
 
         if (comparisonEffPoints.length > 0) {
           drawPolynomialTrendline(ctx, comparisonEffPoints, efficiencyDegree, '#808080', padding, drawingWidth, drawingHeight);
@@ -770,14 +774,10 @@ const PumpCurveNew2: React.FC = () => {
 
       // Draw comparison VFD points
       if (comparisonData.points.vfdPoints && comparisonData.points.vfdPoints.length > 0) {
-        const comparisonVfdPoints = comparisonData.points.vfdPoints.map(point => {
-          const x = (Number(point.flow) * 100) / maxFlow;
-          const y = (Number(point.head) * 100) / maxHead;
-          return {
-            x: Math.max(0, Math.min(100, x)),
-            y: Math.max(0, Math.min(100, y))
-          };
-        }).filter(point => !isNaN(point.x) && !isNaN(point.y));
+        const comparisonVfdPoints = comparisonData.points.vfdPoints.map(point => ({
+          actualFlow: Math.max(0, Math.min(maxFlow, Number(point.actualFlow))),
+          actualHead: Math.max(0, Math.min(maxHead, Number(point.actualHead)))
+        })).filter(point => !isNaN(point.actualFlow) && !isNaN(point.actualHead));
 
         if (comparisonVfdPoints.length > 0) {
           drawPolynomialTrendline(ctx, comparisonVfdPoints, 0, '#808080', padding, drawingWidth, drawingHeight, true);
@@ -815,36 +815,10 @@ const PumpCurveNew2: React.FC = () => {
     }
   }, [caseInfo.projectName, caseInfo.stage, caseInfo.pumpName, caseInfo.date]);
 
-  const findClosestPoint = (x: number, y: number, points: Point[]) => {
-    if (points.length === 0) return { index: -1, distance: Infinity };
-
-    let minDistance = Infinity;
-    let closestIndex = -1;
-
-    points.forEach((point, index) => {
-      const distance = Math.sqrt(
-        Math.pow(point.x - x, 2) + 
-        Math.pow(point.y - y, 2)
-      );
-      if (distance < minDistance) {
-        minDistance = distance;
-        closestIndex = index;
-      }
-    });
-
-    return { index: closestIndex, distance: minDistance };
-  };
-
-  const calculateCanvasCoordinates = (
-    clientX: number,
-    clientY: number,
-    canvas: HTMLCanvasElement
-  ) => {
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-
-    // Calculate padding based on canvas dimensions
+  const findClosestPoint = (points: Point[], mouseX: number, mouseY: number): Point | null => {
+    if (!canvasRef.current) return null;
+    
+    const canvas = canvasRef.current;
     const padding = {
       left: Math.round(canvas.width * 0.07),
       right: Math.round(canvas.width * 0.07),
@@ -855,99 +829,165 @@ const PumpCurveNew2: React.FC = () => {
     const drawingWidth = canvas.width - padding.left - padding.right;
     const drawingHeight = canvas.height - padding.top - padding.bottom;
 
-    // Calculate exact canvas coordinates
-    const canvasX = (clientX - rect.left) * scaleX;
-    const canvasY = (clientY - rect.top) * scaleY;
+    let minDistance = Infinity;
+    let closestPoint: Point | null = null;
 
-    // Convert to percentage values considering padding
-    let x = ((canvasX - padding.left) / drawingWidth) * 100;
-    let y = (1 - (canvasY - padding.top) / drawingHeight) * 100;
+    points.forEach(point => {
+      // Convert actual values to canvas coordinates
+      const canvasX = padding.left + (point.actualFlow / maxFlow) * drawingWidth;
+      const canvasY = padding.top + (1 - (point.isEfficiency ? point.actualEfficiency! : point.actualHead!) / 
+        (point.isEfficiency ? maxEfficiency : maxHead)) * drawingHeight;
 
-    // Clamp values between 0 and 100
-    x = Math.max(0, Math.min(100, x));
-    y = Math.max(0, Math.min(100, y));
+      const dx = mouseX - canvasX;
+      const dy = mouseY - canvasY;
+      const distance = Math.sqrt(dx * dx + dy * dy);
 
-    // Round to one decimal place
-    return {
-      x: parseFloat(x.toFixed(1)),
-      y: parseFloat(y.toFixed(1))
-    };
+      // Consider a point "close enough" if it's within 20 pixels
+      if (distance < minDistance && distance < 20) {
+        minDistance = distance;
+        closestPoint = point;
+      }
+    });
+
+    return closestPoint;
   };
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (e.button === 2) {
-      handleCanvasClick(e);
+    if (!canvasRef.current) return;
+
+    const rect = canvasRef.current.getBoundingClientRect();
+    const scaleX = canvasRef.current.width / rect.width;
+    const scaleY = canvasRef.current.height / rect.height;
+    
+    const mouseX = (e.clientX - rect.left) * scaleX;
+    const mouseY = (e.clientY - rect.top) * scaleY;
+
+    // Check each type of points in order: head, efficiency, vfd
+    let closestPoint = findClosestPoint(points, mouseX, mouseY);
+    if (closestPoint) {
+      e.preventDefault();
+      const index = points.indexOf(closestPoint);
+      setDraggedPoint({
+        index,
+        field: 'head',
+        type: 'head'
+      });
+      setIsDragging(true);
+      setDragMode('head');
       return;
     }
 
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const { x, y } = calculateCanvasCoordinates(e.clientX, e.clientY, canvas);
-
-    // Find the closest point
-    const headResult = findClosestPoint(x, y, points);
-    const efficiencyResult = findClosestPoint(x, y, efficiencyPoints);
-    const vfdResult = findClosestPoint(x, y, vfdPoints);
-
-    // Determine which point is closer
-    if (headResult.distance < efficiencyResult.distance && headResult.distance < vfdResult.distance && headResult.distance < 5) {
+    closestPoint = findClosestPoint(efficiencyPoints, mouseX, mouseY);
+    if (closestPoint) {
+      e.preventDefault();
+      const index = efficiencyPoints.indexOf(closestPoint);
+      setDraggedPoint({
+        index,
+        field: 'efficiency',
+        type: 'efficiency'
+      });
       setIsDragging(true);
-      setDraggedPoint({ index: headResult.index, field: 'x', x, type: 'head' });
-      setDragMode('head');
-    } else if (efficiencyResult.distance < vfdResult.distance && efficiencyResult.distance < 5) {
-      setIsDragging(true);
-      setDraggedPoint({ index: efficiencyResult.index, field: 'x', x, type: 'efficiency' });
       setDragMode('efficiency');
-    } else if (vfdResult.distance < 5) {
+      return;
+    }
+
+    closestPoint = findClosestPoint(vfdPoints, mouseX, mouseY);
+    if (closestPoint) {
+      e.preventDefault();
+      const index = vfdPoints.indexOf(closestPoint);
+      setDraggedPoint({
+        index,
+        field: 'head',
+        type: 'vfd'
+      });
       setIsDragging(true);
-      setDraggedPoint({ index: vfdResult.index, field: 'x', x, type: 'vfd' });
       setDragMode('vfd');
-    } else if (x >= 0 && x <= 100 && y >= 0 && y <= 100) {
-      // If no point is close enough, add a new point
-      handleCanvasClick(e);
+      return;
     }
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDragging || !draggedPoint) return;
+    if (!canvasRef.current || !isDragging || !draggedPoint) return;
+
+    e.preventDefault(); // Prevent unwanted events
 
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
 
-    const { x, y } = calculateCanvasCoordinates(e.clientX, e.clientY, canvas);
+    // Get mouse position relative to canvas element
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
 
-    // Clamp values between 0 and 100
-    const clampedX = Math.max(0, Math.min(100, x));
-    const clampedY = Math.max(0, Math.min(100, y));
+    // Convert to canvas coordinates (considering the scaling)
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const canvasX = mouseX * scaleX;
+    const canvasY = mouseY * scaleY;
 
-    let newPoints = [...points];
-    let newEfficiencyPoints = [...efficiencyPoints];
-    let newVfdPoints = [...vfdPoints];
+    // Calculate padding
+    const padding = {
+      left: Math.round(canvas.width * 0.07),
+      right: Math.round(canvas.width * 0.07),
+      top: Math.round(canvas.height * 0.033),
+      bottom: Math.round(canvas.height * 0.060)
+    };
 
-    if (dragMode === 'head') {
-      newPoints[draggedPoint.index] = { 
-        x: parseFloat(clampedX.toFixed(1)), 
-        y: parseFloat(clampedY.toFixed(1)) 
-      };
+    // Calculate drawing dimensions
+    const drawingWidth = canvas.width - padding.left - padding.right;
+    const drawingHeight = canvas.height - padding.top - padding.bottom;
+
+    // Check if mouse is within drawing area
+    if (canvasX < padding.left || canvasX > canvas.width - padding.right ||
+        canvasY < padding.top || canvasY > canvas.height - padding.bottom) {
+      return;
+    }
+
+    // Calculate the percentage of the position within the drawing area
+    const xPercent = (canvasX - padding.left) / drawingWidth;
+    const yPercent = (canvasY - padding.top) / drawingHeight;
+
+    // Convert to actual values (note the 1 - yPercent to invert Y axis)
+    const actualFlow = xPercent * maxFlow;
+    const actualValue = (1 - yPercent) * (draggedPoint.field === 'efficiency' ? maxEfficiency : maxHead);
+
+    // Create updated point with new values
+    const updatedPoint: Point = {
+      actualFlow: Math.max(0, Math.min(maxFlow, actualFlow)),
+      ...(draggedPoint.field === 'efficiency'
+        ? { 
+            actualEfficiency: Math.max(0, Math.min(maxEfficiency, actualValue)),
+            isEfficiency: true 
+          }
+        : { actualHead: Math.max(0, Math.min(maxHead, actualValue)) }
+      )
+    };
+
+    // Update the appropriate array
+    if (draggedPoint.type === 'efficiency') {
+      const newPoints = [...efficiencyPoints];
+      newPoints[draggedPoint.index] = updatedPoint;
+      setEfficiencyPoints(newPoints);
+    } else if (draggedPoint.type === 'head') {
+      const newPoints = [...points];
+      newPoints[draggedPoint.index] = updatedPoint;
       setPoints(newPoints);
-    } else if (dragMode === 'efficiency') {
-      newEfficiencyPoints[draggedPoint.index] = { 
-        x: parseFloat(clampedX.toFixed(1)), 
-        y: parseFloat(clampedY.toFixed(1)) 
-      };
-      setEfficiencyPoints(newEfficiencyPoints);
-    } else if (dragMode === 'vfd') {
-      newVfdPoints[draggedPoint.index] = { 
-        x: parseFloat(clampedX.toFixed(1)), 
-        y: parseFloat(clampedY.toFixed(1)) 
-      };
-      setVfdPoints(newVfdPoints);
+    } else if (draggedPoint.type === 'vfd') {
+      const newPoints = [...vfdPoints];
+      newPoints[draggedPoint.index] = updatedPoint;
+      setVfdPoints(newPoints);
+    }
+
+    // Force redraw
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      drawCanvas(ctx, canvas.width, canvas.height);
     }
   };
 
-  const handleMouseUp = () => {
+  const handleMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (isDragging) {
+      e.preventDefault(); // Prevent canvas click event
+      e.stopPropagation(); // Stop event propagation
       // Save the final state to history only when dragging ends
       saveToHistory(points, efficiencyPoints, vfdPoints);
     }
@@ -957,121 +997,109 @@ const PumpCurveNew2: React.FC = () => {
   };
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    // Prevent creating new points if we just finished dragging
+    if (!canvasRef.current || isDragging || dragMode || e.isPropagationStopped()) return;
+
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const mouseX = (e.clientX - rect.left) * scaleX;
+    const mouseY = (e.clientY - rect.top) * scaleY;
 
-    const { x, y } = calculateCanvasCoordinates(e.clientX, e.clientY, canvas);
+    // Calculate padding
+    const padding = {
+      left: Math.round(canvas.width * 0.07),
+      right: Math.round(canvas.width * 0.07),
+      top: Math.round(canvas.height * 0.033),
+      bottom: Math.round(canvas.height * 0.060)
+    };
 
-    // Right click to delete the closest point
-    if (e.button === 2) {
-      e.preventDefault();
-      const clickPoint = { x, y };
-      
-      let minDistance = Infinity;
-      let closestPointIndex = -1;
-      let pointType: 'head' | 'efficiency' | 'vfd' = 'head';
+    // Check if we clicked near any existing point (from any mode)
+    const headPoint = findClosestPoint(points, mouseX, mouseY);
+    const effPoint = findClosestPoint(efficiencyPoints, mouseX, mouseY);
+    const vfdPoint = findClosestPoint(vfdPoints, mouseX, mouseY);
+    
+    if (headPoint || effPoint || vfdPoint) return; // Don't create new point if near any existing point
 
-      // Check all points sets
-      points.forEach((point, index) => {
-        const distance = Math.sqrt(
-          Math.pow(point.x - clickPoint.x, 2) + 
-          Math.pow(point.y - clickPoint.y, 2)
-        );
-        if (distance < minDistance) {
-          minDistance = distance;
-          closestPointIndex = index;
-          pointType = 'head';
-        }
-      });
+    // Calculate drawing dimensions
+    const drawingWidth = canvas.width - padding.left - padding.right;
+    const drawingHeight = canvas.height - padding.top - padding.bottom;
 
-      efficiencyPoints.forEach((point, index) => {
-        const distance = Math.sqrt(
-          Math.pow(point.x - clickPoint.x, 2) + 
-          Math.pow(point.y - clickPoint.y, 2)
-        );
-        if (distance < minDistance) {
-          minDistance = distance;
-          closestPointIndex = index;
-          pointType = 'efficiency';
-        }
-      });
-
-      vfdPoints.forEach((point, index) => {
-        const distance = Math.sqrt(
-          Math.pow(point.x - clickPoint.x, 2) + 
-          Math.pow(point.y - clickPoint.y, 2)
-        );
-        if (distance < minDistance) {
-          minDistance = distance;
-          closestPointIndex = index;
-          pointType = 'vfd';
-        }
-      });
-
-      if (minDistance < 5) {
-        handleDeletePoint(closestPointIndex, pointType);
-      }
+    // Check if click is within the drawing area
+    if (mouseX < padding.left || mouseX > canvas.width - padding.right ||
+        mouseY < padding.top || mouseY > canvas.height - padding.bottom) {
       return;
     }
 
-    // Left click to add new point
-    if (x >= 0 && x <= 100 && y >= 0 && y <= 100) {
-      const newPoint = { x: parseFloat(x.toFixed(1)), y: parseFloat(y.toFixed(1)) };
+    // Calculate the percentage of the click position within the drawing area
+    const xPercent = (mouseX - padding.left) / drawingWidth;
+    const yPercent = (mouseY - padding.top) / drawingHeight;
 
-      let newPoints = [...points];
-      let newEfficiencyPoints = [...efficiencyPoints];
-      let newVfdPoints = [...vfdPoints];
+    // Convert to actual values (note the 1 - yPercent to invert Y axis)
+    const actualFlow = xPercent * maxFlow;
+    const actualValue = (1 - yPercent) * (selectedMode === 'efficiency' ? maxEfficiency : maxHead);
 
-      if (recordMode === 'head') {
-        newPoints = [...points, newPoint];
-        setPoints(newPoints);
-      } else if (recordMode === 'efficiency') {
-        newEfficiencyPoints = [...efficiencyPoints, newPoint];
-        setEfficiencyPoints(newEfficiencyPoints);
-      } else if (recordMode === 'vfd') {
-        newVfdPoints = [...vfdPoints, newPoint];
-        setVfdPoints(newVfdPoints);
-      }
+    // Create a new point with actual values
+    const newPoint: Point = {
+      actualFlow: Math.max(0, Math.min(maxFlow, actualFlow)),
+      ...(selectedMode === 'efficiency'
+        ? { 
+            actualEfficiency: Math.max(0, Math.min(maxEfficiency, actualValue)),
+            isEfficiency: true 
+          }
+        : { actualHead: Math.max(0, Math.min(maxHead, actualValue)) }
+      )
+    };
 
-      saveToHistory(newPoints, newEfficiencyPoints, newVfdPoints);
+    // Add the new point to the appropriate array
+    if (selectedMode === 'efficiency') {
+      setEfficiencyPoints(prev => [...prev, newPoint]);
+    } else if (selectedMode === 'head') {
+      setPoints(prev => [...prev, newPoint]);
+    } else if (selectedMode === 'vfd') {
+      setVfdPoints(prev => [...prev, newPoint]);
+    }
+
+    // Save to history
+    const newHistoryState = {
+      points: selectedMode === 'head' ? [...points, newPoint] : points,
+      efficiencyPoints: selectedMode === 'efficiency' ? [...efficiencyPoints, newPoint] : efficiencyPoints,
+      vfdPoints: selectedMode === 'vfd' ? [...vfdPoints, newPoint] : vfdPoints
+    };
+
+    setHistory(prev => [...prev.slice(0, currentHistoryIndex + 1), newHistoryState]);
+    setCurrentHistoryIndex(prev => prev + 1);
+
+    // Force redraw
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      drawCanvas(ctx, canvas.width, canvas.height);
     }
   };
 
-  const handleEditPoint = (index: number, type: 'head' | 'efficiency' | 'vfd', newX: number, newY: number) => {
+  const handleEditPoint = (index: number, type: 'head' | 'efficiency' | 'vfd', actualFlow: number, actualValue: number) => {
     let newPoints = [...points];
     let newEfficiencyPoints = [...efficiencyPoints];
     let newVfdPoints = [...vfdPoints];
 
-    // Store actual values directly
     if (type === 'head') {
-      // Convert to percentage for canvas display
-      const xPercentage = (newX * 100) / maxFlow;
-      const yPercentage = (newY * 100) / maxHead;
       newPoints[index] = { 
-        x: xPercentage, 
-        y: yPercentage,
-        actualFlow: newX,  // Store actual flow
-        actualHead: newY   // Store actual head
+        actualFlow,
+        actualHead: actualValue
       };
       setPoints(newPoints);
     } else if (type === 'efficiency') {
-      const xPercentage = (newX * 100) / maxFlow;
       newEfficiencyPoints[index] = { 
-        x: xPercentage, 
-        y: newY,  // Efficiency is always in percentage
-        isEfficiency: true,
-        actualFlow: newX,   // Store actual flow
-        actualEfficiency: newY  // Store actual efficiency percentage
+        actualFlow,
+        actualEfficiency: actualValue,
+        isEfficiency: true
       };
       setEfficiencyPoints(newEfficiencyPoints);
     } else if (type === 'vfd') {
-      const xPercentage = (newX * 100) / maxFlow;
-      const yPercentage = (newY * 100) / maxHead;
       newVfdPoints[index] = { 
-        x: xPercentage, 
-        y: yPercentage,
-        actualFlow: newX,  // Store actual flow
-        actualHead: newY   // Store actual head
+        actualFlow,
+        actualHead: actualValue
       };
       setVfdPoints(newVfdPoints);
     }
@@ -1113,22 +1141,22 @@ const PumpCurveNew2: React.FC = () => {
   const handleCopyAllPoints = () => {
     const headData = sortedPoints.map((point, index) => ({
       no: index + 1,
-      flow: ((point.x * maxFlow) / 100).toFixed(1),
-      head: ((point.y * maxHead) / 100).toFixed(1)
+      flow: point.actualFlow.toFixed(1),
+      head: point.actualHead!.toFixed(1)
     }));
 
     const efficiencyData = sortedEfficiencyPoints.map((point, index) => ({
       no: index + 1,
-      flow: ((point.x * maxFlow) / 100).toFixed(1),
-      efficiency: ((point.y * maxEfficiency) / 100).toFixed(1)
+      flow: point.actualFlow.toFixed(1),
+      efficiency: point.actualEfficiency!.toFixed(1)
     }));
 
     const vfdData = sortedVfdPoints.map((point, index) => {
       const { speedRatio, vfdEfficiency } = calculateVfdEfficiency(point);
       return {
         no: index + 1,
-        flow: ((point.x * maxFlow) / 100).toFixed(1),
-        head: ((point.y * maxHead) / 100).toFixed(1),
+        flow: point.actualFlow.toFixed(1),
+        head: point.actualHead!.toFixed(1),
         speed: speedRatio.toFixed(1),
         efficiency: vfdEfficiency.toFixed(1)
       };
@@ -1158,8 +1186,8 @@ const PumpCurveNew2: React.FC = () => {
 
   const handleExportJson = () => {
     // Calculate equations
-    const headCoefficients = calculateActualPolynomialCoefficients(points, headDegree, maxFlow, maxHead);
-    const efficiencyCoefficients = calculateActualPolynomialCoefficients(efficiencyPoints, efficiencyDegree, maxFlow, maxEfficiency);
+    const headCoefficients = calculateActualPolynomialCoefficients(points, headDegree);
+    const efficiencyCoefficients = calculateActualPolynomialCoefficients(efficiencyPoints, efficiencyDegree);
 
     // Find BEP point
     const bep = findBepPoint(points, efficiencyPoints);
@@ -1167,10 +1195,10 @@ const PumpCurveNew2: React.FC = () => {
     const data: LoadedData = {
       caseInfo,
       maxValues: {
-        head: maxHead,
-        flow: maxFlow,
-        efficiency: maxEfficiency,
-        rpm: maxRpm  // Add this line
+        actualHead: maxHead,
+        actualFlow: maxFlow,
+        actualEfficiency: maxEfficiency,
+        rpm: maxRpm
       },
       equations: {
         head: {
@@ -1184,27 +1212,27 @@ const PumpCurveNew2: React.FC = () => {
       },
       points: {
         headPoints: sortedPoints.map(point => ({
-          flow: ((point.x * maxFlow) / 100).toFixed(1),
-          head: ((point.y * maxHead) / 100).toFixed(1)
+          actualFlow: point.actualFlow.toFixed(1),
+          actualHead: point.actualHead!.toFixed(1)
         })),
         efficiencyPoints: sortedEfficiencyPoints.map(point => ({
-          flow: ((point.x * maxFlow) / 100).toFixed(1),
-          efficiency: point.y.toFixed(1)
+          actualFlow: point.actualFlow.toFixed(1),
+          actualEfficiency: point.actualEfficiency!.toFixed(1)
         })),
         vfdPoints: sortedVfdPoints.map(point => {
           const { speedRatio, vfdEfficiency } = calculateVfdEfficiency(point);
           return {
-            flow: ((point.x * maxFlow) / 100).toFixed(1),
-            head: ((point.y * maxHead) / 100).toFixed(1),
+            actualFlow: point.actualFlow.toFixed(1),
+            actualHead: point.actualHead!.toFixed(1),
             speed: speedRatio.toFixed(1),
-            efficiency: vfdEfficiency.toFixed(1)
+            actualEfficiency: vfdEfficiency.toFixed(1)
           };
         })
       },
       bepPoint: bep ? {
-        flow: bep.flow.toFixed(1),
-        head: bep.head.toFixed(1),
-        efficiency: bep.efficiency.toFixed(1)
+        actualFlow: bep.actualFlow.toFixed(1),
+        actualHead: bep.actualHead.toFixed(1),
+        actualEfficiency: bep.actualEfficiency.toFixed(1)
       } : undefined
     };
 
@@ -1239,9 +1267,9 @@ const PumpCurveNew2: React.FC = () => {
 
       // Prepare all new states
       const newMaxValues = {
-        head: Number(data.maxValues?.head) || 100,
-        flow: Number(data.maxValues?.flow) || 100,
-        efficiency: Number(data.maxValues?.efficiency) || 100,
+        actualHead: Number(data.maxValues?.head) || 100,
+        actualFlow: Number(data.maxValues?.flow) || 100,
+        actualEfficiency: Number(data.maxValues?.efficiency) || 100,
         rpm: Number(data.maxValues?.rpm) || 1800
       };
 
@@ -1268,47 +1296,56 @@ const PumpCurveNew2: React.FC = () => {
       const newVfdPoints: Point[] = [];
 
       if (Array.isArray(data.points?.headPoints)) {
-        data.points.headPoints.forEach((point: DefaultDataPoint) => {
-          const flow = Number(point.flow);
-          const head = Number(point.head);
-          if (!isNaN(flow) && !isNaN(head)) {
-            newPoints.push({
-              x: (flow * 100) / newMaxValues.flow,
-              y: (head * 100) / newMaxValues.head,
-              actualFlow: flow,
-              actualHead: head
-            });
+        data.points.headPoints.forEach((point: { [key: string]: any }) => {
+          // Convert old format to new format if needed
+          const actualFlow = point.actualFlow || point.flow;
+          const actualHead = point.actualHead || point.head;
+          
+          if (actualFlow !== undefined && actualHead !== undefined) {
+            const validPoint = {
+              actualFlow: Number(actualFlow),
+              actualHead: Number(actualHead)
+            };
+            if (!isNaN(validPoint.actualFlow) && !isNaN(validPoint.actualHead)) {
+              newPoints.push(validPoint);
+            }
           }
         });
       }
 
       if (Array.isArray(data.points?.efficiencyPoints)) {
-        data.points.efficiencyPoints.forEach((point: DefaultDataPoint) => {
-          const flow = Number(point.flow);
-          const efficiency = Number(point.efficiency);
-          if (!isNaN(flow) && !isNaN(efficiency)) {
-            newEfficiencyPoints.push({
-              x: (flow * 100) / newMaxValues.flow,
-              y: efficiency,
-              isEfficiency: true,
-              actualFlow: flow,
-              actualEfficiency: efficiency
-            });
+        data.points.efficiencyPoints.forEach((point: { [key: string]: any }) => {
+          // Convert old format to new format if needed
+          const actualFlow = point.actualFlow || point.flow;
+          const actualEfficiency = point.actualEfficiency || point.efficiency;
+          
+          if (actualFlow !== undefined && actualEfficiency !== undefined) {
+            const validPoint = {
+              actualFlow: Number(actualFlow),
+              actualEfficiency: Number(actualEfficiency),
+              isEfficiency: true
+            };
+            if (!isNaN(validPoint.actualFlow) && !isNaN(validPoint.actualEfficiency)) {
+              newEfficiencyPoints.push(validPoint);
+            }
           }
         });
       }
 
       if (Array.isArray(data.points?.vfdPoints)) {
-        data.points.vfdPoints.forEach((point: DefaultDataPoint) => {
-          const flow = Number(point.flow);
-          const head = Number(point.head);
-          if (!isNaN(flow) && !isNaN(head)) {
-            newVfdPoints.push({
-              x: (flow * 100) / newMaxValues.flow,
-              y: (head * 100) / newMaxValues.head,
-              actualFlow: flow,
-              actualHead: head
-            });
+        data.points.vfdPoints.forEach((point: { [key: string]: any }) => {
+          // Convert old format to new format if needed
+          const actualFlow = point.actualFlow || point.flow;
+          const actualHead = point.actualHead || point.head;
+          
+          if (actualFlow !== undefined && actualHead !== undefined) {
+            const validPoint = {
+              actualFlow: Number(actualFlow),
+              actualHead: Number(actualHead)
+            };
+            if (!isNaN(validPoint.actualFlow) && !isNaN(validPoint.actualHead)) {
+              newVfdPoints.push(validPoint);
+            }
           }
         });
       }
@@ -1323,9 +1360,9 @@ const PumpCurveNew2: React.FC = () => {
       // Update all states in a single batch
       ReactDOM.flushSync(() => {
         // Set max values first
-        setMaxHead(newMaxValues.head);
-        setMaxFlow(newMaxValues.flow);
-        setMaxEfficiency(newMaxValues.efficiency);
+        setMaxHead(newMaxValues.actualHead);
+        setMaxFlow(newMaxValues.actualFlow);
+        setMaxEfficiency(newMaxValues.actualEfficiency);
         setMaxRpm(newMaxValues.rpm);
 
         // Set other states
@@ -1392,10 +1429,10 @@ const PumpCurveNew2: React.FC = () => {
 
         // Set max values
         if (data.maxValues && typeof data.maxValues === 'object') {
-          const { head = 100, flow = 100, efficiency = 100, rpm = 1800 } = data.maxValues;
-          setMaxHead(Number(head) || 100);
-          setMaxFlow(Number(flow) || 100);
-          setMaxEfficiency(Number(efficiency) || 100);
+          const { actualHead = 100, actualFlow = 100, actualEfficiency = 100, rpm = 1800 } = data.maxValues;
+          setMaxHead(Number(actualHead) || 100);
+          setMaxFlow(Number(actualFlow) || 100);
+          setMaxEfficiency(Number(actualEfficiency) || 100);
           setMaxRpm(Number(rpm) || 1800);
         }
 
@@ -1410,24 +1447,34 @@ const PumpCurveNew2: React.FC = () => {
         }
 
         // Helper function to validate point data
-        const validatePoint = (point: { 
-          flow: string | number; 
-          head?: string | number; 
-          efficiency?: string | number;
-        }): Point | null => {
+        const validatePoint = (point: { [key: string]: any }): Point | null => {
           if (!point || typeof point !== 'object') return null;
-          const flow = Number(point.flow);
-          const head = Number(point.head);
-          const efficiency = Number(point.efficiency);
+          
+          // Convert old format to new format if needed
+          const actualFlow = point.actualFlow || point.flow;
+          const actualHead = point.actualHead || point.head;
+          const actualEfficiency = point.actualEfficiency || point.efficiency;
+          
+          const flow = Number(actualFlow);
+          const head = Number(actualHead);
+          const efficiency = Number(actualEfficiency);
           
           if (isNaN(flow)) return null;
           if (isNaN(head) && isNaN(efficiency)) return null;
           
+          if (!isNaN(head)) {
           return {
-            x: (flow * 100) / (data.maxValues?.flow || 100),
-            y: head ? (head * 100) / (data.maxValues?.head || 100) : 
-               efficiency ? efficiency : 0
-          };
+              actualFlow: flow,
+              actualHead: head
+            };
+          } else if (!isNaN(efficiency)) {
+            return {
+              actualFlow: flow,
+              actualEfficiency: efficiency,
+              isEfficiency: true
+            };
+          }
+          return null;
         };
 
         // Convert and set points
@@ -1437,21 +1484,30 @@ const PumpCurveNew2: React.FC = () => {
 
         if (Array.isArray(data.points?.headPoints)) {
           data.points.headPoints.forEach((point: DefaultDataPoint) => {
-            const validPoint = validatePoint(point);
+            const validPoint = validatePoint({
+              actualFlow: point.actualFlow,
+              actualHead: point.actualHead
+            });
             if (validPoint) headPoints.push(validPoint);
           });
         }
 
         if (Array.isArray(data.points?.efficiencyPoints)) {
           data.points.efficiencyPoints.forEach((point: DefaultDataPoint) => {
-            const validPoint = validatePoint(point);
+            const validPoint = validatePoint({
+              actualFlow: point.actualFlow,
+              actualEfficiency: point.actualEfficiency
+            });
             if (validPoint) efficiencyPoints.push(validPoint);
           });
         }
 
         if (Array.isArray(data.points?.vfdPoints)) {
           data.points.vfdPoints.forEach((point: DefaultDataPoint) => {
-            const validPoint = validatePoint(point);
+            const validPoint = validatePoint({
+              actualFlow: point.actualFlow,
+              actualHead: point.actualHead
+            });
             if (validPoint) vfdPoints.push(validPoint);
           });
         }
@@ -1525,8 +1581,8 @@ const PumpCurveNew2: React.FC = () => {
   // Add equation calculation effect
   useEffect(() => {
     // Calculate and set equations
-    const headCoefficients = calculateActualPolynomialCoefficients(points, headDegree, maxFlow, maxHead);
-    const efficiencyCoefficients = calculateActualPolynomialCoefficients(efficiencyPoints, efficiencyDegree, maxFlow, maxEfficiency);
+    const headCoefficients = calculateActualPolynomialCoefficients(points, headDegree);
+    const efficiencyCoefficients = calculateActualPolynomialCoefficients(efficiencyPoints, efficiencyDegree);
     
     setHeadEquation(headCoefficients ? formatEquation(headCoefficients) : '');
     setEfficiencyEquation(efficiencyCoefficients ? formatEquation(efficiencyCoefficients) : '');
@@ -1539,7 +1595,7 @@ const PumpCurveNew2: React.FC = () => {
         drawCanvas(ctx, canvas.width, canvas.height);
       }
     }
-  }, [points, efficiencyPoints, headDegree, efficiencyDegree, maxFlow, maxHead, maxEfficiency]);
+  }, [points, efficiencyPoints, headDegree, efficiencyDegree]);
 
   const handleClearAllPoints = () => {
     setPoints([]);
@@ -1569,7 +1625,7 @@ const PumpCurveNew2: React.FC = () => {
     }
   };
 
-  // Add keyboard shortcut handler
+  // Update keyboard shortcut handler
   useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
       if (e.ctrlKey) {
@@ -1581,10 +1637,8 @@ const PumpCurveNew2: React.FC = () => {
           redo();
         } else if (e.key === 'e') {
           e.preventDefault();
-          setRecordMode(prev => {
-            const newMode = prev === 'head' ? 'efficiency' : prev === 'efficiency' ? 'vfd' : 'head';
-            setSelectedMode(newMode);
-            return newMode;
+          setSelectedMode((prev: 'head' | 'efficiency' | 'vfd') => {
+            return prev === 'head' ? 'efficiency' : prev === 'efficiency' ? 'vfd' : 'head';
           });
         } else if (e.key === 'x') {
           e.preventDefault();
@@ -1604,19 +1658,19 @@ const PumpCurveNew2: React.FC = () => {
     }
   }, []);
 
-  // Function to calculate VFD efficiency using affinity law
+  // Update calculateVfdEfficiency function
   const calculateVfdEfficiency = (vfdPoint: Point): { speedRatio: number; vfdEfficiency: number } => {
     if (points.length < 2 || efficiencyPoints.length < 2) return { speedRatio: 0, vfdEfficiency: 0 };
 
     // Get actual values
-    const vfdFlow = (vfdPoint.x * maxFlow) / 100;
-    const vfdHead = (vfdPoint.y * maxHead) / 100;
+    const vfdFlow = vfdPoint.actualFlow;
+    const vfdHead = vfdPoint.actualHead || 0;
 
-    // Calculate head polynomial coefficients for 100% speed curve
-    const headCoefficients = calculateActualPolynomialCoefficients(points, headDegree, maxFlow, maxHead);
+    // Calculate head polynomial coefficients
+    const headCoefficients = calculateActualPolynomialCoefficients(points, headDegree);
     if (!headCoefficients.length) return { speedRatio: 0, vfdEfficiency: 0 };
 
-    // Calculate base head at VFD flow point from 100% speed curve
+    // Get actual values and calculate base head
     const baseHead = headCoefficients.reduce((sum, coeff, index) => {
       return sum + coeff * Math.pow(vfdFlow, headCoefficients.length - 1 - index);
     }, 0);
@@ -1627,7 +1681,7 @@ const PumpCurveNew2: React.FC = () => {
     // Calculate quadratic coefficient for VFD point curve (y = ax²)
     const a = vfdHead / Math.max(0.0001, vfdFlow * vfdFlow);
 
-    // Find intersection point with head curve using more robust method
+    // Find intersection point with head curve using binary search
     let intersectionFlow = vfdFlow;  // Start with VFD flow as initial guess
     const numIterations = 100;
     const epsilon = 0.0001;
@@ -1661,12 +1715,7 @@ const PumpCurveNew2: React.FC = () => {
     intersectionFlow = Math.max(0, Math.min(maxFlow, intersectionFlow));
 
     // Calculate efficiency polynomial coefficients
-    const efficiencyCoefficients = calculateActualPolynomialCoefficients(
-      efficiencyPoints,
-      efficiencyDegree,
-      maxFlow,
-      maxEfficiency
-    );
+    const efficiencyCoefficients = calculateActualPolynomialCoefficients(efficiencyPoints, efficiencyDegree);
     if (!efficiencyCoefficients.length) return { speedRatio: 0, vfdEfficiency: 0 };
 
     // Calculate efficiency at the intersection flow point
@@ -1683,16 +1732,14 @@ const PumpCurveNew2: React.FC = () => {
     };
   };
 
-  // Add function to find BEP
+  // Update findBepPoint function
   const findBepPoint = (points: Point[], efficiencyPoints: Point[]): BepPoint | null => {
     if (efficiencyPoints.length < 2) return null;
 
     // Calculate efficiency polynomial coefficients
     const efficiencyCoefficients = calculateActualPolynomialCoefficients(
       efficiencyPoints,
-      efficiencyDegree,
-      maxFlow,
-      maxEfficiency
+      efficiencyDegree
     );
 
     if (!efficiencyCoefficients.length) return null;
@@ -1703,7 +1750,7 @@ const PumpCurveNew2: React.FC = () => {
     
     // Sample 1000 points to find maximum
     const numSamples = 1000;
-    const maxFlowPoint = Math.max(...efficiencyPoints.map(p => (p.x * maxFlow) / 100));
+    const maxFlowPoint = Math.max(...efficiencyPoints.map(p => p.actualFlow));
     
     for (let i = 0; i <= numSamples; i++) {
       const flow = (i * maxFlowPoint) / numSamples;
@@ -1718,7 +1765,7 @@ const PumpCurveNew2: React.FC = () => {
     }
 
     // Calculate head at BEP flow
-    const headCoefficients = calculateActualPolynomialCoefficients(points, headDegree, maxFlow, maxHead);
+    const headCoefficients = calculateActualPolynomialCoefficients(points, headDegree);
     if (!headCoefficients.length) return null;
 
     const bepHead = headCoefficients.reduce((sum, coeff, index) => {
@@ -1726,9 +1773,9 @@ const PumpCurveNew2: React.FC = () => {
     }, 0);
 
     return {
-      flow: bepFlow,
-      head: bepHead,
-      efficiency: maxEff
+      actualFlow: bepFlow,
+      actualHead: bepHead,
+      actualEfficiency: maxEff
     };
   };
 
@@ -1762,24 +1809,24 @@ const PumpCurveNew2: React.FC = () => {
             // Transform head points
             if (data.points.headPoints) {
               data.points.headPoints = data.points.headPoints.map((point: DefaultDataPoint) => ({
-                flow: Number(point.flow),
-                head: Number(point.head)
+                actualFlow: point.actualFlow ? Number(point.actualFlow) : Number(point.flow),
+                actualHead: point.actualHead ? Number(point.actualHead) : Number(point.head)
               }));
             }
             
             // Transform efficiency points
             if (data.points.efficiencyPoints) {
               data.points.efficiencyPoints = data.points.efficiencyPoints.map((point: DefaultDataPoint) => ({
-                flow: Number(point.flow),
-                efficiency: Number(point.efficiency)
+                actualFlow: point.actualFlow ? Number(point.actualFlow) : Number(point.flow),
+                actualEfficiency: point.actualEfficiency ? Number(point.actualEfficiency) : Number(point.efficiency)
               }));
             }
             
             // Transform VFD points
             if (data.points.vfdPoints) {
               data.points.vfdPoints = data.points.vfdPoints.map((point: DefaultDataPoint) => ({
-                flow: Number(point.flow),
-                head: Number(point.head)
+                actualFlow: point.actualFlow ? Number(point.actualFlow) : Number(point.flow),
+                actualHead: point.actualHead ? Number(point.actualHead) : Number(point.head)
               }));
             }
           }
@@ -1796,32 +1843,19 @@ const PumpCurveNew2: React.FC = () => {
 
   // Update useEffect for handling range changes
   useEffect(() => {
-    // Store current values as previous before updating
-    const prevMaxFlow = prevMaxFlowRef.current;
-    const prevMaxHead = prevMaxHeadRef.current;
-    
     // Only update canvas positions when range changes, keeping actual values intact
     const newPoints = points.map(point => ({
-      ...point,
-      x: (point.actualFlow || (point.x * prevMaxFlow / 100)) * 100 / maxFlow,
-      y: (point.actualHead || (point.y * prevMaxHead / 100)) * 100 / maxHead
+      ...point
     }));
     setPoints(newPoints);
 
     const newEfficiencyPoints = efficiencyPoints.map(point => ({
-      ...point,
-      x: (point.actualFlow || (point.x * prevMaxFlow / 100)) * 100 / maxFlow,
-      y: point.actualEfficiency || point.y,  // Keep efficiency percentage as is
-      isEfficiency: true,
-      actualFlow: point.actualFlow || (point.x * prevMaxFlow / 100),
-      actualEfficiency: point.actualEfficiency || point.y
+      ...point
     }));
     setEfficiencyPoints(newEfficiencyPoints);
 
     const newVfdPoints = vfdPoints.map(point => ({
-      ...point,
-      x: (point.actualFlow || (point.x * prevMaxFlow / 100)) * 100 / maxFlow,
-      y: (point.actualHead || (point.y * prevMaxHead / 100)) * 100 / maxHead
+      ...point
     }));
     setVfdPoints(newVfdPoints);
 
@@ -1830,8 +1864,136 @@ const PumpCurveNew2: React.FC = () => {
     prevMaxHeadRef.current = maxHead;
   }, [maxFlow, maxHead, maxEfficiency, points, efficiencyPoints, vfdPoints]);
 
+  // Handlers for form inputs
+  const handleFormInputChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>, 
+    field: 'projectName' | 'stage' | 'date' | 'pumpName' | 'maxHead' | 'maxFlow' | 'maxEfficiency' | 'maxRpm'
+  ) => {
+    const value = e.target.value;
+    
+    // For case info fields, update immediately
+    if (field === 'projectName' || field === 'stage' || field === 'date' || field === 'pumpName') {
+      setCaseInfo(prev => ({ ...prev, [field]: value }));
+    } else {
+      // For numeric fields, keep using temp values
+      setTempInputValues(prev => ({ ...prev, [field]: value }));
+    }
+  };
+
+  const handleFormInputBlur = (
+    e: React.FocusEvent<HTMLInputElement | HTMLSelectElement>,
+    field: 'projectName' | 'stage' | 'date' | 'pumpName' | 'maxHead' | 'maxFlow' | 'maxEfficiency' | 'maxRpm'
+  ) => {
+    const value = e.target.value;
+    setTempInputValues(prev => {
+      const newValues = { ...prev };
+      delete newValues[field];
+      return newValues;
+    });
+
+    // Only handle numeric fields here since case info fields are handled in onChange
+    if (field === 'maxHead' || field === 'maxFlow' || field === 'maxEfficiency' || field === 'maxRpm') {
+      const numValue = parseFloat(value);
+      if (!isNaN(numValue)) {
+        switch (field) {
+          case 'maxHead':
+            setMaxHead(numValue || 100);
+            break;
+          case 'maxFlow':
+            setMaxFlow(numValue || 100);
+            break;
+          case 'maxEfficiency':
+            setMaxEfficiency(numValue || 100);
+            break;
+          case 'maxRpm':
+            setMaxRpm(numValue || 1800);
+            break;
+        }
+      }
+    }
+  };
+
+  const handleFormInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement | HTMLSelectElement>) => {
+    if (e.key === 'Enter') {
+      e.currentTarget.blur();
+    }
+  };
+
+  // Handlers for table inputs
+  const handleTableInputChange = (e: React.ChangeEvent<HTMLInputElement>, index: number, type: 'head' | 'efficiency' | 'vfd', field: 'flow' | 'head' | 'efficiency') => {
+    const key = `${type}-${index}-${field}`;
+    setTempInputValues(prev => ({ ...prev, [key]: e.target.value }));
+  };
+
+  const handleTableInputBlur = (e: React.FocusEvent<HTMLInputElement>, index: number, type: 'head' | 'efficiency' | 'vfd', field: 'flow' | 'head' | 'efficiency') => {
+    const numValue = parseFloat(e.target.value);
+    if (isNaN(numValue)) return;
+
+    const key = `${type}-${index}-${field}`;
+    setTempInputValues(prev => {
+      const newValues = { ...prev };
+      delete newValues[key];
+      return newValues;
+    });
+
+    if (field === 'flow') {
+      handleEditPoint(index, type, numValue, type === 'head' ? points[index].actualHead! : type === 'efficiency' ? efficiencyPoints[index].actualEfficiency! : vfdPoints[index].actualHead!);
+    } else if (field === 'head') {
+      handleEditPoint(index, type, type === 'head' ? points[index].actualFlow : vfdPoints[index].actualFlow, numValue);
+    } else if (field === 'efficiency') {
+      handleEditPoint(index, type, efficiencyPoints[index].actualFlow, numValue);
+    }
+  };
+
+  const handleTableInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.currentTarget.blur();
+    }
+  };
+
+  const handleContextMenu = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    e.preventDefault(); // Prevent default context menu
+
+    if (!canvasRef.current) return;
+
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const mouseX = (e.clientX - rect.left) * scaleX;
+    const mouseY = (e.clientY - rect.top) * scaleY;
+
+    // Check each type of points
+    const headPoint = findClosestPoint(points, mouseX, mouseY);
+    if (headPoint) {
+      const index = points.indexOf(headPoint);
+      const newPoints = points.filter((_, i) => i !== index);
+      setPoints(newPoints);
+      saveToHistory(newPoints, efficiencyPoints, vfdPoints);
+      return;
+    }
+
+    const effPoint = findClosestPoint(efficiencyPoints, mouseX, mouseY);
+    if (effPoint) {
+      const index = efficiencyPoints.indexOf(effPoint);
+      const newEffPoints = efficiencyPoints.filter((_, i) => i !== index);
+      setEfficiencyPoints(newEffPoints);
+      saveToHistory(points, newEffPoints, vfdPoints);
+      return;
+    }
+
+    const vfdPoint = findClosestPoint(vfdPoints, mouseX, mouseY);
+    if (vfdPoint) {
+      const index = vfdPoints.indexOf(vfdPoint);
+      const newVfdPoints = vfdPoints.filter((_, i) => i !== index);
+      setVfdPoints(newVfdPoints);
+      saveToHistory(points, efficiencyPoints, newVfdPoints);
+      return;
+    }
+  };
+
   return (
-    <Card className="max-w-[1800px] mx-auto">
+    <Card className="max-w-[1800px] mx-auto min-w-[600px]">
       <CardContent className="p-4 bg-gray-300">
         <div className="space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1942,7 +2104,7 @@ const PumpCurveNew2: React.FC = () => {
                 <Input
                   id="projectName"
                   value={caseInfo.projectName}
-                  onChange={(e) => setCaseInfo(prev => ({ ...prev, projectName: e.target.value }))}
+                  onChange={(e) => handleFormInputChange(e, 'projectName')}
                   className="flex-1 bg-white h-8 min-w-[100px] text-xs"
                 />
               </div>
@@ -1952,7 +2114,7 @@ const PumpCurveNew2: React.FC = () => {
                   id="stage"
                   title="단계 선택"
                   value={caseInfo.stage}
-                  onChange={(e) => setCaseInfo(prev => ({ ...prev, stage: e.target.value }))}
+                  onChange={(e) => handleFormInputChange(e, 'stage')}
                   className="flex-1 text-xs rounded-md border border-input bg-background px-3 py-2 h-8.5 min-w-[100px] bg-white"
                 >
                   <option value="수행">수행</option>
@@ -1966,7 +2128,7 @@ const PumpCurveNew2: React.FC = () => {
                   id="date"
                   type="date"
                   value={caseInfo.date}
-                  onChange={(e) => setCaseInfo(prev => ({ ...prev, date: e.target.value }))}
+                  onChange={(e) => handleFormInputChange(e, 'date')}
                   className="flex-1 bg-white h-9 min-w-[120px] text-xs"
                 />
               </div>
@@ -1975,10 +2137,10 @@ const PumpCurveNew2: React.FC = () => {
                 <Input
                   id="pumpName"
                   value={caseInfo.pumpName}
-                  onChange={(e) => setCaseInfo(prev => ({ ...prev, pumpName: e.target.value }))}
+                  onChange={(e) => handleFormInputChange(e, 'pumpName')}
                   className="flex-1 bg-white h-9 min-w-[100px] text-xs"
                 />
-            </div>
+              </div>
             </div>
               </div>
 
@@ -1990,8 +2152,10 @@ const PumpCurveNew2: React.FC = () => {
               <Input
                 id="maxHead"
                 type="number"
-                value={maxHead}
-                onChange={(e) => setMaxHead(parseFloat(e.target.value) || 100)}
+                value={tempInputValues['maxHead'] ?? maxHead}
+                onChange={(e) => handleFormInputChange(e, 'maxHead')}
+                onBlur={(e) => handleFormInputBlur(e, 'maxHead')}
+                onKeyDown={(e) => handleFormInputKeyDown(e)}
                 className="w-24 h-8 bg-white text-xs"
               />
             </div>
@@ -2000,8 +2164,10 @@ const PumpCurveNew2: React.FC = () => {
               <Input
                 id="maxFlow"
                 type="number"
-                value={maxFlow}
-                onChange={(e) => setMaxFlow(parseFloat(e.target.value) || 100)}
+                value={tempInputValues['maxFlow'] ?? maxFlow}
+                onChange={(e) => handleFormInputChange(e, 'maxFlow')}
+                onBlur={(e) => handleFormInputBlur(e, 'maxFlow')}
+                onKeyDown={(e) => handleFormInputKeyDown(e)}
                 className="w-24 h-8 bg-white text-xs"
               />
             </div>
@@ -2010,8 +2176,10 @@ const PumpCurveNew2: React.FC = () => {
               <Input
                 id="maxEfficiency"
                 type="number"
-                value={maxEfficiency}
-                onChange={(e) => setMaxEfficiency(parseFloat(e.target.value) || 100)}
+                value={tempInputValues['maxEfficiency'] ?? maxEfficiency}
+                onChange={(e) => handleFormInputChange(e, 'maxEfficiency')}
+                onBlur={(e) => handleFormInputBlur(e, 'maxEfficiency')}
+                onKeyDown={(e) => handleFormInputKeyDown(e)}
                 className="w-24 h-8 bg-white text-xs"
               />
             </div>
@@ -2020,8 +2188,10 @@ const PumpCurveNew2: React.FC = () => {
               <Input
                 id="maxRpm"
                 type="number"
-                value={maxRpm}
-                onChange={(e) => setMaxRpm(parseFloat(e.target.value) || 1800)}
+                value={tempInputValues['maxRpm'] ?? maxRpm}
+                onChange={(e) => handleFormInputChange(e, 'maxRpm')}
+                onBlur={(e) => handleFormInputBlur(e, 'maxRpm')}
+                onKeyDown={(e) => handleFormInputKeyDown(e)}
                 className="w-24 h-8 bg-white text-xs"
               />
             </div>
@@ -2031,7 +2201,6 @@ const PumpCurveNew2: React.FC = () => {
                 <button
                   onClick={() => {
                     setSelectedMode('head');
-                    setRecordMode('head');
                   }}
                   title="단축키: CTRL+E"
                   className={`px-2 py-2 rounded-md text-xs font-medium transition-all duration-200 border ${
@@ -2045,7 +2214,6 @@ const PumpCurveNew2: React.FC = () => {
                 <button
                   onClick={() => {
                     setSelectedMode('efficiency');
-                    setRecordMode('efficiency');
                   }}
                   title="단축키: CTRL+E"
                   className={`px-2 py-2 rounded-md text-xs font-medium transition-all duration-200 border ${
@@ -2059,7 +2227,6 @@ const PumpCurveNew2: React.FC = () => {
                 <button
                   onClick={() => {
                     setSelectedMode('vfd');
-                    setRecordMode('vfd');
                   }}
                   title="단축키: CTRL+E"
                   className={`px-2 py-2 rounded-md text-xs font-medium transition-all duration-200 border ${
@@ -2158,10 +2325,18 @@ const PumpCurveNew2: React.FC = () => {
                   key={canvasKey}
               ref={canvasRef}
               onMouseDown={handleMouseDown}
-              onMouseMove={handleMouseMove}
+              onMouseMove={isDragging ? handleMouseMove : undefined}
               onMouseUp={handleMouseUp}
               onMouseLeave={handleMouseUp}
-              onContextMenu={handleCanvasClick}
+              onClick={(e) => {
+                if (isDragging || dragMode) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  return;
+                }
+                handleCanvasClick(e);
+              }}
+              onContextMenu={handleContextMenu}
                   className="w-full h-auto"
                   style={{ 
                     cursor: isDragging ? 'grabbing' : 'crosshair',
@@ -2261,8 +2436,8 @@ const PumpCurveNew2: React.FC = () => {
                 <thead>
                   <tr>
                     <th className="border p-1 text-left">No</th>
-                    <th className="border p-1 text-left">Flow(m³/h)</th>
-                    <th className="border p-1 text-left">TDH(m)</th>
+                    <th className="border p-1 text-left">Actual Flow(m³/h)</th>
+                    <th className="border p-1 text-left">Actual TDH(m)</th>
                     <th className="border p-1 text-left">Del.</th>
                   </tr>
                 </thead>
@@ -2273,8 +2448,10 @@ const PumpCurveNew2: React.FC = () => {
                       <td className="border p-1 text-left">
                         <input
                             type="number"
-                          value={point.actualFlow?.toFixed(1) || ((point.x * maxFlow) / 100).toFixed(1)}
-                          onChange={(e) => handleEditPoint(index, 'head', (parseFloat(e.target.value) * 100) / maxFlow, point.y)}
+                          value={tempInputValues[`head-${index}-flow`] ?? point.actualFlow.toFixed(1)}
+                          onChange={(e) => handleTableInputChange(e, index, 'head', 'flow')}
+                          onBlur={(e) => handleTableInputBlur(e, index, 'head', 'flow')}
+                          onKeyDown={(e) => handleTableInputKeyDown(e)}
                           className="w-14 h-6"
                           title={`Edit flow for head point ${index + 1}`}
                           placeholder="Flow"
@@ -2283,8 +2460,10 @@ const PumpCurveNew2: React.FC = () => {
                       <td className="border p-1 text-left">
                         <input
                             type="number"
-                          value={point.actualHead?.toFixed(1) || ((point.y * maxHead) / 100).toFixed(1)}
-                          onChange={(e) => handleEditPoint(index, 'head', point.x, (parseFloat(e.target.value) * 100) / maxHead)}
+                          value={tempInputValues[`head-${index}-head`] ?? point.actualHead!.toFixed(1)}
+                          onChange={(e) => handleTableInputChange(e, index, 'head', 'head')}
+                          onBlur={(e) => handleTableInputBlur(e, index, 'head', 'head')}
+                          onKeyDown={(e) => handleTableInputKeyDown(e)}
                           className="w-14 h-6"
                           title={`Edit head for head point ${index + 1}`}
                           placeholder="Head"
@@ -2318,7 +2497,7 @@ const PumpCurveNew2: React.FC = () => {
                 <thead>
                   <tr>
                     <th className="border p-1 text-left">No</th>
-                    <th className="border p-1 text-left">Flow(m³/h)</th>
+                    <th className="border p-1 text-left">Actual Flow(m³/h)</th>
                     <th className="border p-1 text-left">Efficiency(%)</th>
                     <th className="border p-1 text-left">Del.</th>
                   </tr>
@@ -2330,8 +2509,10 @@ const PumpCurveNew2: React.FC = () => {
                       <td className="border p-1 text-left">
                         <input
                             type="number"
-                          value={point.actualFlow?.toFixed(1) || ((point.x * maxFlow) / 100).toFixed(1)}
-                          onChange={(e) => handleEditPoint(index, 'efficiency', (parseFloat(e.target.value) * 100) / maxFlow, point.y)}
+                          value={tempInputValues[`efficiency-${index}-flow`] ?? point.actualFlow.toFixed(1)}
+                          onChange={(e) => handleTableInputChange(e, index, 'efficiency', 'flow')}
+                          onBlur={(e) => handleTableInputBlur(e, index, 'efficiency', 'flow')}
+                          onKeyDown={(e) => handleTableInputKeyDown(e)}
                           className="w-14 h-6"
                           title={`Edit flow for efficiency point ${index + 1}`}
                           placeholder="Flow"
@@ -2340,8 +2521,10 @@ const PumpCurveNew2: React.FC = () => {
                       <td className="border p-1 text-left">
                         <input
                           type="number"
-                          value={point.y.toFixed(1)}
-                          onChange={(e) => handleEditPoint(index, 'efficiency', point.x, parseFloat(e.target.value))}
+                          value={tempInputValues[`efficiency-${index}-efficiency`] ?? point.actualEfficiency!.toFixed(1)}
+                          onChange={(e) => handleTableInputChange(e, index, 'efficiency', 'efficiency')}
+                          onBlur={(e) => handleTableInputBlur(e, index, 'efficiency', 'efficiency')}
+                          onKeyDown={(e) => handleTableInputKeyDown(e)}
                           className="w-14 h-6"
                           title={`Edit efficiency for efficiency point ${index + 1}`}
                           placeholder="Efficiency"
@@ -2378,8 +2561,8 @@ const PumpCurveNew2: React.FC = () => {
                 <thead>
                   <tr>
                     <th className="border p-1 text-left">No</th>
-                    <th className="border p-1 text-left">Flow(m³/h)</th>
-                    <th className="border p-1 text-left">TDH(m)</th>
+                    <th className="border p-1 text-left">Actual Flow(m³/h)</th>
+                    <th className="border p-1 text-left">Actual TDH(m)</th>
                     <th className="border p-1 text-left">Speed(%)</th>
                     <th className="border p-1 text-left">Speed(rpm)</th>
                     <th className="border p-1 text-left">Eff.(%)</th>
@@ -2397,8 +2580,10 @@ const PumpCurveNew2: React.FC = () => {
                         <td className="border p-1 text-left">
                           <input
                             type="number"
-                            value={point.actualFlow?.toFixed(1) || ((point.x * maxFlow) / 100).toFixed(1)}
-                            onChange={(e) => handleEditPoint(index, 'vfd', (parseFloat(e.target.value) * 100) / maxFlow, point.y)}
+                            value={tempInputValues[`vfd-${index}-flow`] ?? point.actualFlow.toFixed(1)}
+                            onChange={(e) => handleTableInputChange(e, index, 'vfd', 'flow')}
+                            onBlur={(e) => handleTableInputBlur(e, index, 'vfd', 'flow')}
+                            onKeyDown={(e) => handleTableInputKeyDown(e)}
                             className="w-14 h-6"
                             title={`Edit flow for VFD point ${index + 1}`}
                             placeholder="Flow"
@@ -2407,8 +2592,10 @@ const PumpCurveNew2: React.FC = () => {
                         <td className="border p-1 text-left">
                           <input
                             type="number"
-                            value={point.actualHead?.toFixed(1) || ((point.y * maxHead) / 100).toFixed(1)}
-                            onChange={(e) => handleEditPoint(index, 'vfd', point.x, (parseFloat(e.target.value) * 100) / maxHead)}
+                            value={tempInputValues[`vfd-${index}-head`] ?? point.actualHead!.toFixed(1)}
+                            onChange={(e) => handleTableInputChange(e, index, 'vfd', 'head')}
+                            onBlur={(e) => handleTableInputBlur(e, index, 'vfd', 'head')}
+                            onKeyDown={(e) => handleTableInputKeyDown(e)}
                             className="w-14 h-6"
                             title={`Edit head for VFD point ${index + 1}`}
                             placeholder="Head"
