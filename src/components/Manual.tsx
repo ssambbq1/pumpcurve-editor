@@ -3,10 +3,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogClose,
 } from "@/components/ui/dialog";
-import { X } from "lucide-react";
-import { Button } from "@/components/ui/button";
 
 interface ManualProps {
   open: boolean;
@@ -19,11 +16,6 @@ const Manual: React.FC<ManualProps> = ({ open, onOpenChange }) => {
       <DialogContent className="max-w-[800px] max-h-[80vh] overflow-y-auto">
         <DialogHeader className="flex flex-row items-center justify-between">
           <DialogTitle>Manual</DialogTitle>
-          <DialogClose asChild>
-            <Button variant="ghost" className="w-8 h-8 p-0">
-              <X className="h-4 w-4" />
-            </Button>
-          </DialogClose>
         </DialogHeader>
         <div className="space-y-4">
           <div>
