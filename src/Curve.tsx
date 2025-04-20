@@ -7,7 +7,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Trash2, Copy, Table, Download, FileUp, Image as ImageIcon, FileText } from "lucide-react";
 import Manual from '@/components/Manual';
-import ReactDOM from 'react-dom';
 
 interface Point {
   actualFlow: number;
@@ -35,10 +34,12 @@ interface DefaultDataPoint {
 
 interface CaseInfo {
   caseName: string;
-    projectName: string;
-    stage: string;
-    date: string;
-    pumpName: string;
+  projectName: string;
+  stage: string;
+  date: string;
+  pumpName: string;
+  maker: string;
+  modelName: string;
 }
 
 interface LoadedData {
@@ -117,7 +118,9 @@ const PumpCurveNew2: React.FC = () => {
     projectName: '',
     stage: '수행',
     date: new Date().toISOString().split('T')[0],
-    pumpName: ''
+    pumpName: '',
+    maker: '',
+    modelName: ''
   });
   const [backgroundImage, setBackgroundImage] = useState<HTMLImageElement | null>(null);
   const [imageOpacity, setImageOpacity] = useState(0.5);
@@ -253,20 +256,9 @@ const PumpCurveNew2: React.FC = () => {
     drawingHeight: number,
     isOpHead: boolean = false
   ) => {
-    if (points.length < 2) return;
+    if (points.length === 0) return;
 
-    // Extract x and y values for coefficient calculation using actual values
-    const xValues = points.map(point => point.actualFlow);
-    const yValues = points.map(point => 
-      point.isEfficiency 
-        ? point.actualEfficiency!
-        : point.actualHead!
-    );
-
-    // Calculate coefficients using actual values
-    const coefficients = calculatePolynomialCoefficients(xValues, yValues, degree);
-
-    // Draw points
+    // Draw points regardless of count
     points.forEach(point => {
       // Convert actual values to canvas coordinates
       const x = padding.left + (point.actualFlow / maxFlow) * drawingWidth;
@@ -296,7 +288,18 @@ const PumpCurveNew2: React.FC = () => {
     });
 
     // Only draw trendline if we have enough points and not opHead
-    if (points.length <= degree || isOpHead) return;
+    if (points.length < 2 || isOpHead) return;
+
+    // Extract x and y values for coefficient calculation using actual values
+    const xValues = points.map(point => point.actualFlow);
+    const yValues = points.map(point => 
+      point.isEfficiency 
+        ? point.actualEfficiency!
+        : point.actualHead!
+    );
+
+    // Calculate coefficients using actual values
+    const coefficients = calculatePolynomialCoefficients(xValues, yValues, degree);
 
     // Draw curve
     ctx.beginPath();
@@ -805,6 +808,8 @@ const PumpCurveNew2: React.FC = () => {
       caseInfo.projectName,
       caseInfo.stage,
       caseInfo.pumpName,
+      caseInfo.maker,
+      caseInfo.modelName,  // Add modelName to case name
       caseInfo.date
     ]
       .filter(Boolean) // Remove empty values
@@ -813,7 +818,7 @@ const PumpCurveNew2: React.FC = () => {
     if (newCaseName !== caseInfo.caseName) {
       setCaseInfo(prev => ({ ...prev, caseName: newCaseName }));
     }
-  }, [caseInfo.projectName, caseInfo.stage, caseInfo.pumpName, caseInfo.date]);
+  }, [caseInfo.projectName, caseInfo.stage, caseInfo.pumpName, caseInfo.maker, caseInfo.modelName, caseInfo.date]);
 
   const findClosestPoint = (points: Point[], mouseX: number, mouseY: number): Point | null => {
     if (!canvasRef.current) return null;
@@ -1052,13 +1057,38 @@ const PumpCurveNew2: React.FC = () => {
       )
     };
 
-    // Add the new point to the appropriate array
+    // Add the new point to the appropriate array and force a redraw
+    const ctx = canvas.getContext('2d');
     if (selectedMode === 'efficiency') {
-      setEfficiencyPoints(prev => [...prev, newPoint]);
+      setEfficiencyPoints(prev => {
+        const newPoints = [...prev, newPoint];
+        if (ctx) {
+          requestAnimationFrame(() => {
+            drawCanvas(ctx, canvas.width, canvas.height);
+          });
+        }
+        return newPoints;
+      });
     } else if (selectedMode === 'head') {
-      setPoints(prev => [...prev, newPoint]);
+      setPoints(prev => {
+        const newPoints = [...prev, newPoint];
+        if (ctx) {
+          requestAnimationFrame(() => {
+            drawCanvas(ctx, canvas.width, canvas.height);
+          });
+        }
+        return newPoints;
+      });
     } else if (selectedMode === 'vfd') {
-      setVfdPoints(prev => [...prev, newPoint]);
+      setVfdPoints(prev => {
+        const newPoints = [...prev, newPoint];
+        if (ctx) {
+          requestAnimationFrame(() => {
+            drawCanvas(ctx, canvas.width, canvas.height);
+          });
+        }
+        return newPoints;
+      });
     }
 
     // Save to history
@@ -1070,12 +1100,6 @@ const PumpCurveNew2: React.FC = () => {
 
     setHistory(prev => [...prev.slice(0, currentHistoryIndex + 1), newHistoryState]);
     setCurrentHistoryIndex(prev => prev + 1);
-
-    // Force redraw
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      drawCanvas(ctx, canvas.width, canvas.height);
-    }
   };
 
   const handleEditPoint = (index: number, type: 'head' | 'efficiency' | 'vfd', actualFlow: number, actualValue: number) => {
@@ -1212,20 +1236,20 @@ const PumpCurveNew2: React.FC = () => {
       },
       points: {
         headPoints: sortedPoints.map(point => ({
-          actualFlow: point.actualFlow.toFixed(1),
-          actualHead: point.actualHead!.toFixed(1)
+          actualFlow: point.actualFlow,
+          actualHead: point.actualHead
         })),
         efficiencyPoints: sortedEfficiencyPoints.map(point => ({
-          actualFlow: point.actualFlow.toFixed(1),
-          actualEfficiency: point.actualEfficiency!.toFixed(1)
+          actualFlow: point.actualFlow,
+          actualEfficiency: point.actualEfficiency
         })),
         vfdPoints: sortedVfdPoints.map(point => {
           const { speedRatio, vfdEfficiency } = calculateVfdEfficiency(point);
           return {
-            actualFlow: point.actualFlow.toFixed(1),
-            actualHead: point.actualHead!.toFixed(1),
-            speed: speedRatio.toFixed(1),
-            actualEfficiency: vfdEfficiency.toFixed(1)
+            actualFlow: point.actualFlow,
+            actualHead: point.actualHead,
+            speed: speedRatio,
+            actualEfficiency: vfdEfficiency
           };
         })
       },
@@ -1265,30 +1289,34 @@ const PumpCurveNew2: React.FC = () => {
       setBackgroundImage(null);
       setImageOpacity(0.5);
 
-      // Prepare all new states
-      const newMaxValues = {
-        actualHead: Number(data.maxValues?.head) || 100,
-        actualFlow: Number(data.maxValues?.flow) || 100,
-        actualEfficiency: Number(data.maxValues?.efficiency) || 100,
-        rpm: Number(data.maxValues?.rpm) || 1800
-      };
+      // Set max values first
+      if (data.maxValues) {
+        setMaxHead(Number(data.maxValues.actualHead) || 100);
+        setMaxFlow(Number(data.maxValues.actualFlow) || 100);
+        setMaxEfficiency(Number(data.maxValues.actualEfficiency) || 100);
+        setMaxRpm(Number(data.maxValues.rpm) || 1800);
+      }
 
-      const newCaseInfo = {
-        caseName: data.caseInfo?.caseName || '',
-        projectName: data.caseInfo?.projectName || '',
-        stage: data.caseInfo?.stage || '수행',
-        date: data.caseInfo?.date || new Date().toISOString().split('T')[0],
-        pumpName: data.caseInfo?.pumpName || ''
-      };
+      // Set case info
+      if (data.caseInfo) {
+        setCaseInfo({
+          caseName: data.caseInfo.caseName || '',
+          projectName: data.caseInfo.projectName || '',
+          stage: data.caseInfo.stage || '수행',
+          date: data.caseInfo.date || new Date().toISOString().split('T')[0],
+          pumpName: data.caseInfo.pumpName || '',
+          maker: data.caseInfo.maker || '',
+          modelName: data.caseInfo.modelName || ''
+        });
+      }
 
-      const newDegrees = {
-        head: data.equations?.head?.degree >= 2 && data.equations?.head?.degree <= 4 
-          ? Number(data.equations.head.degree) 
-          : 4,
-        efficiency: data.equations?.efficiency?.degree >= 2 && data.equations?.efficiency?.degree <= 4 
-          ? Number(data.equations.efficiency.degree) 
-          : 4
-      };
+      // Set polynomial degrees
+      if (data.equations?.head?.degree) {
+        setHeadDegree(Number(data.equations.head.degree) || 4);
+      }
+      if (data.equations?.efficiency?.degree) {
+        setEfficiencyDegree(Number(data.equations.efficiency.degree) || 4);
+      }
 
       // Convert points with actual values
       const newPoints: Point[] = [];
@@ -1296,90 +1324,52 @@ const PumpCurveNew2: React.FC = () => {
       const newVfdPoints: Point[] = [];
 
       if (Array.isArray(data.points?.headPoints)) {
-        data.points.headPoints.forEach((point: { [key: string]: any }) => {
-          // Convert old format to new format if needed
-          const actualFlow = point.actualFlow || point.flow;
-          const actualHead = point.actualHead || point.head;
-          
-          if (actualFlow !== undefined && actualHead !== undefined) {
-            const validPoint = {
-              actualFlow: Number(actualFlow),
-              actualHead: Number(actualHead)
-            };
-            if (!isNaN(validPoint.actualFlow) && !isNaN(validPoint.actualHead)) {
-              newPoints.push(validPoint);
-            }
+        data.points.headPoints.forEach((point: DefaultDataPoint) => {
+          const flow = Number(point.actualFlow || point.flow);
+          const head = Number(point.actualHead || point.head);
+          if (!isNaN(flow) && !isNaN(head)) {
+            newPoints.push({ actualFlow: flow, actualHead: head });
           }
         });
       }
 
       if (Array.isArray(data.points?.efficiencyPoints)) {
-        data.points.efficiencyPoints.forEach((point: { [key: string]: any }) => {
-          // Convert old format to new format if needed
-          const actualFlow = point.actualFlow || point.flow;
-          const actualEfficiency = point.actualEfficiency || point.efficiency;
-          
-          if (actualFlow !== undefined && actualEfficiency !== undefined) {
-            const validPoint = {
-              actualFlow: Number(actualFlow),
-              actualEfficiency: Number(actualEfficiency),
-              isEfficiency: true
-            };
-            if (!isNaN(validPoint.actualFlow) && !isNaN(validPoint.actualEfficiency)) {
-              newEfficiencyPoints.push(validPoint);
-            }
+        data.points.efficiencyPoints.forEach((point: DefaultDataPoint) => {
+          const flow = Number(point.actualFlow || point.flow);
+          const efficiency = Number(point.actualEfficiency || point.efficiency);
+          if (!isNaN(flow) && !isNaN(efficiency)) {
+            newEfficiencyPoints.push({ 
+              actualFlow: flow, 
+              actualEfficiency: efficiency,
+              isEfficiency: true 
+            });
           }
         });
       }
 
       if (Array.isArray(data.points?.vfdPoints)) {
-        data.points.vfdPoints.forEach((point: { [key: string]: any }) => {
-          // Convert old format to new format if needed
-          const actualFlow = point.actualFlow || point.flow;
-          const actualHead = point.actualHead || point.head;
-          
-          if (actualFlow !== undefined && actualHead !== undefined) {
-            const validPoint = {
-              actualFlow: Number(actualFlow),
-              actualHead: Number(actualHead)
-            };
-            if (!isNaN(validPoint.actualFlow) && !isNaN(validPoint.actualHead)) {
-              newVfdPoints.push(validPoint);
-            }
+        data.points.vfdPoints.forEach((point: DefaultDataPoint) => {
+          const flow = Number(point.actualFlow || point.flow);
+          const head = Number(point.actualHead || point.head);
+          if (!isNaN(flow) && !isNaN(head)) {
+            newVfdPoints.push({ actualFlow: flow, actualHead: head });
           }
         });
       }
 
-      // Create new history state
-      const newHistory = [{
+      // Set points and history
+      setPoints(newPoints);
+      setEfficiencyPoints(newEfficiencyPoints);
+      setVfdPoints(newVfdPoints);
+      setHistory([{
         points: newPoints,
         efficiencyPoints: newEfficiencyPoints,
         vfdPoints: newVfdPoints
-      }];
+      }]);
+      setCurrentHistoryIndex(0);
 
-      // Update all states in a single batch
-      ReactDOM.flushSync(() => {
-        // Set max values first
-        setMaxHead(newMaxValues.actualHead);
-        setMaxFlow(newMaxValues.actualFlow);
-        setMaxEfficiency(newMaxValues.actualEfficiency);
-        setMaxRpm(newMaxValues.rpm);
-
-        // Set other states
-        setCaseInfo(newCaseInfo);
-        setHeadDegree(newDegrees.head);
-        setEfficiencyDegree(newDegrees.efficiency);
-        
-        // Set points and history
-        setPoints(newPoints);
-        setEfficiencyPoints(newEfficiencyPoints);
-        setVfdPoints(newVfdPoints);
-        setHistory(newHistory);
-        setCurrentHistoryIndex(0);
-
-        // Force canvas redraw
-        setCanvasKey(prev => prev + 1);
-      });
+      // Force canvas redraw
+      setCanvasKey(prev => prev + 1);
 
     } catch (error) {
       console.error('Error loading data:', error);
@@ -1423,7 +1413,9 @@ const PumpCurveNew2: React.FC = () => {
             projectName: data.caseInfo.projectName || '',
             stage: data.caseInfo.stage || '수행',
             date: data.caseInfo.date || new Date().toISOString().split('T')[0],
-            pumpName: data.caseInfo.pumpName || ''
+            pumpName: data.caseInfo.pumpName || '',
+            maker: data.caseInfo.maker || '',
+            modelName: data.caseInfo.modelName || ''
           });
         }
 
@@ -1866,23 +1858,23 @@ const PumpCurveNew2: React.FC = () => {
 
   // Handlers for form inputs
   const handleFormInputChange = (
-    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>, 
-    field: 'projectName' | 'stage' | 'date' | 'pumpName' | 'maxHead' | 'maxFlow' | 'maxEfficiency' | 'maxRpm'
+    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>,
+    field: 'maxHead' | 'maxFlow' | 'maxEfficiency' | 'projectName' | 'stage' | 'pumpName' | 'date' | 'maxRpm' | 'maker' | 'modelName'
   ) => {
     const value = e.target.value;
     
-    // For case info fields, update immediately
-    if (field === 'projectName' || field === 'stage' || field === 'date' || field === 'pumpName') {
-      setCaseInfo(prev => ({ ...prev, [field]: value }));
-    } else {
-      // For numeric fields, keep using temp values
+    // Handle numeric fields
+    if (field === 'maxHead' || field === 'maxFlow' || field === 'maxEfficiency' || field === 'maxRpm') {
       setTempInputValues(prev => ({ ...prev, [field]: value }));
+    } else {
+      // Handle text fields
+      setCaseInfo(prev => ({ ...prev, [field]: value }));
     }
   };
 
   const handleFormInputBlur = (
     e: React.FocusEvent<HTMLInputElement | HTMLSelectElement>,
-    field: 'projectName' | 'stage' | 'date' | 'pumpName' | 'maxHead' | 'maxFlow' | 'maxEfficiency' | 'maxRpm'
+    field: 'maxHead' | 'maxFlow' | 'maxEfficiency' | 'projectName' | 'stage' | 'date' | 'pumpName' | 'maxRpm' | 'maker' | 'modelName'
   ) => {
     const value = e.target.value;
     setTempInputValues(prev => {
@@ -1891,22 +1883,22 @@ const PumpCurveNew2: React.FC = () => {
       return newValues;
     });
 
-    // Only handle numeric fields here since case info fields are handled in onChange
+    // Handle numeric fields
     if (field === 'maxHead' || field === 'maxFlow' || field === 'maxEfficiency' || field === 'maxRpm') {
       const numValue = parseFloat(value);
-      if (!isNaN(numValue)) {
+      if (!isNaN(numValue) && numValue > 0) {
         switch (field) {
           case 'maxHead':
-            setMaxHead(numValue || 100);
+            setMaxHead(numValue);
             break;
           case 'maxFlow':
-            setMaxFlow(numValue || 100);
+            setMaxFlow(numValue);
             break;
           case 'maxEfficiency':
-            setMaxEfficiency(numValue || 100);
+            setMaxEfficiency(numValue);
             break;
           case 'maxRpm':
-            setMaxRpm(numValue || 1800);
+            setMaxRpm(numValue);
             break;
         }
       }
@@ -2023,7 +2015,7 @@ const PumpCurveNew2: React.FC = () => {
                   variant="outline"
                   size="sm"
                   onClick={() => document.getElementById('json-file-input')?.click()}
-                  className="flex items-center gap-2 h-8 bg-red-50 hover:bg-red-100 text-xs whitespace-nowrap"
+                  className="flex items-center gap-1 h-8 bg-red-50 hover:bg-red-100 text-xs whitespace-nowrap"
                 >
                   <FileUp className="h-4 w-4" />
                   Load Main Case
@@ -2033,7 +2025,7 @@ const PumpCurveNew2: React.FC = () => {
                 variant="outline"
                 size="sm"
                 onClick={handleClearAllPoints}
-                className="flex items-center gap-2 h-8 bg-red-50 hover:bg-red-100 text-xs whitespace-nowrap"
+                className="flex items-center gap-1 h-8 bg-red-50 hover:bg-red-100 text-xs whitespace-nowrap"
                 title="단축키: CTRL+X"
               >
                 <Trash2 className="h-4 w-4" />
@@ -2059,7 +2051,7 @@ const PumpCurveNew2: React.FC = () => {
                   variant="outline"
                   size="sm"
                   onClick={() => document.getElementById('comparison-file-input')?.click()}
-                  className="flex items-center gap-2 h-8 bg-red-50 hover:bg-red-100 text-xs whitespace-nowrap"
+                  className="flex items-center gap-1 h-8 bg-red-50 hover:bg-red-100 text-xs whitespace-nowrap"
                 >
                   <FileUp className="h-4 w-4" />
                   Load Comparison
@@ -2081,15 +2073,17 @@ const PumpCurveNew2: React.FC = () => {
                       }
                     }
                   }}
-                  className="flex items-center gap-2 h-8 bg-red-50 hover:bg-red-100 text-xs whitespace-nowrap"
+                  className="flex items-center gap-1 h-8 bg-red-50 hover:bg-red-100 text-xs whitespace-nowrap"
                 >
                   <Trash2 className="h-4 w-4" />
                   Clear Comparison
                 </Button>
               )}
               <div className="flex flex-wrap gap-2">
-                <Button variant="outline" size="sm" onClick={() => setShowManual(true)}>
-                  <FileText className="w-4 h-4 mr-2" />
+                <Button variant="outline" size="sm" 
+                className="flex items-center gap-1 h-8 bg-gray-100 hover:bg-gray-200 text-xs whitespace-nowrap"
+                onClick={() => setShowManual(true)}>
+                  <FileText className="w-4 h- mr-0" />
                   Manual
                 </Button>
                 {/* Other buttons */}
@@ -2097,18 +2091,20 @@ const PumpCurveNew2: React.FC = () => {
             </div>
           </div>
 
+          <hr className="border-gray-700" />
+
           <div className="flex flex-wrap justify-between items-center bg-gray-300">
             <div className="flex flex-wrap gap-2 flex-grow">
-              <div className="flex items-center gap-2 min-w-[150px]">
+              <div className="flex items-center  gap-2 ">
                 <Label htmlFor="projectName" className="text-xs whitespace-nowrap">PJT:</Label>
                 <Input
                   id="projectName"
                   value={caseInfo.projectName}
                   onChange={(e) => handleFormInputChange(e, 'projectName')}
-                  className="flex-1 bg-white h-8 min-w-[100px] text-xs"
+                  className="flex-1 bg-white h-8 w-20 text-xs"
                 />
               </div>
-              <div className="flex items-center gap-2 min-w-[150px]">
+              <div className="flex items-center gap-2">
                 <Label htmlFor="stage" className="text-xs whitespace-nowrap">단계:</Label>
                 <select
                   id="stage"
@@ -2122,23 +2118,41 @@ const PumpCurveNew2: React.FC = () => {
                   <option value="기타">기타</option>
                 </select>
               </div>
-              <div className="flex items-center gap-2 min-w-[150px]">
+              <div className="flex items-center gap-2">
                 <Label htmlFor="date" className="text-xs whitespace-nowrap">Date:</Label>
                 <Input
                   id="date"
                   type="date"
                   value={caseInfo.date}
                   onChange={(e) => handleFormInputChange(e, 'date')}
-                  className="flex-1 bg-white h-9 min-w-[120px] text-xs"
+                  className="flex-1 bg-white h-9 text-xs"
                 />
               </div>
-              <div className="flex items-center gap-2 min-w-[150px]">
-                <Label htmlFor="pumpName" className="text-xs whitespace-nowrap">Pump Name:</Label>
+              <div className="flex items-center gap-2 ">
+                <Label htmlFor="pumpName" className="text-xs">Pump Name:</Label>
                 <Input
                   id="pumpName"
                   value={caseInfo.pumpName}
                   onChange={(e) => handleFormInputChange(e, 'pumpName')}
-                  className="flex-1 bg-white h-9 min-w-[100px] text-xs"
+                  className="flex-1 bg-white h-9 w-20 text-xs"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <Label htmlFor="maker" className="text-xs ">Maker:</Label>
+                <Input
+                  id="maker"
+                  value={caseInfo.maker}
+                  onChange={(e) => handleFormInputChange(e, 'maker')}
+                  className="flex-1 bg-white h-9 w-20  text-xs"
+                />
+              </div>
+              <div className="flex items-center gap-2 min-w-[150px]">
+                <Label htmlFor="modelName" className="text-xs whitespace-nowrap">Model:</Label>
+                <Input
+                  id="modelName"
+                  value={caseInfo.modelName}
+                  onChange={(e) => handleFormInputChange(e, 'modelName')}
+                  className="flex-1 bg-white h-9 w-20  text-xs"
                 />
               </div>
             </div>
@@ -2156,7 +2170,7 @@ const PumpCurveNew2: React.FC = () => {
                 onChange={(e) => handleFormInputChange(e, 'maxHead')}
                 onBlur={(e) => handleFormInputBlur(e, 'maxHead')}
                 onKeyDown={(e) => handleFormInputKeyDown(e)}
-                className="w-24 h-8 bg-white text-xs"
+                className="w-20 h-8 bg-white text-xs"
               />
             </div>
             <div className="flex items-center gap-2">
@@ -2168,7 +2182,7 @@ const PumpCurveNew2: React.FC = () => {
                 onChange={(e) => handleFormInputChange(e, 'maxFlow')}
                 onBlur={(e) => handleFormInputBlur(e, 'maxFlow')}
                 onKeyDown={(e) => handleFormInputKeyDown(e)}
-                className="w-24 h-8 bg-white text-xs"
+                className="w-20 h-8 bg-white text-xs"
               />
             </div>
             <div className="flex items-center gap-2">
@@ -2180,11 +2194,11 @@ const PumpCurveNew2: React.FC = () => {
                 onChange={(e) => handleFormInputChange(e, 'maxEfficiency')}
                 onBlur={(e) => handleFormInputBlur(e, 'maxEfficiency')}
                 onKeyDown={(e) => handleFormInputKeyDown(e)}
-                className="w-24 h-8 bg-white text-xs"
+                className="w-20 h-8 bg-white text-xs"
               />
             </div>
             <div className="flex items-center gap-2">
-              <Label htmlFor="maxRpm" className="text-xs">RPM(100%):</Label>
+              <Label htmlFor="maxRpm" className="text-xs">RPM:</Label>
               <Input
                 id="maxRpm"
                 type="number"
@@ -2192,7 +2206,7 @@ const PumpCurveNew2: React.FC = () => {
                 onChange={(e) => handleFormInputChange(e, 'maxRpm')}
                 onBlur={(e) => handleFormInputBlur(e, 'maxRpm')}
                 onKeyDown={(e) => handleFormInputKeyDown(e)}
-                className="w-24 h-8 bg-white text-xs"
+                className="w-20 h-8 bg-white text-xs"
               />
             </div>
             <div className="flex items-center gap-4">
