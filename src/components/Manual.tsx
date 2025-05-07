@@ -19,7 +19,7 @@ const Manual: React.FC<ManualProps> = ({ open, onOpenChange }) => {
         </DialogHeader>
         <div className="space-y-4">
           <div>
-            <h4 className="font-semibold mb-2">단축키 (Shortcuts)</h4>
+            <h4 className="font-semibold mb-2">단축키</h4>
             <ul className="list-disc pl-5 space-y-2">
               <li>
                 <kbd className="px-2 py-1 bg-gray-100 rounded-md">Ctrl + Z</kbd>
