@@ -257,30 +257,19 @@ const PumpCurveNew2: React.FC = () => {
     drawingHeight: number,
     isOpHead: boolean = false
   ) => {
-    if (points.length < 2) return;
+    if (points.length === 0) return;
 
-    // Extract x and y values for coefficient calculation using actual values
-    const xValues = points.map(point => point.actualFlow);
-    const yValues = points.map(point => 
-      point.isEfficiency 
-        ? point.actualEfficiency!
-        : point.actualHead!
-    );
-
-    // Calculate coefficients using actual values
-    const coefficients = calculatePolynomialCoefficients(xValues, yValues, degree);
-
-    // Draw points
+    // Draw points first
     points.forEach(point => {
       // Convert actual values to canvas coordinates
       const x = padding.left + (point.actualFlow / maxFlow) * drawingWidth;
       const y = padding.top + (1 - (point.isEfficiency ? point.actualEfficiency! : point.actualHead!) / 
         (point.isEfficiency ? maxEfficiency : maxHead)) * drawingHeight;
 
+      ctx.beginPath();
       if (isOpHead) {
         // Draw cross for operation points
         const crossSize = 6;
-        ctx.beginPath();
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
         // Horizontal line
@@ -293,14 +282,24 @@ const PumpCurveNew2: React.FC = () => {
       } else {
         // Draw circle for head and efficiency points
         ctx.fillStyle = color;
-        ctx.beginPath();
         ctx.arc(x, y, 4, 0, 2 * Math.PI);
         ctx.fill();
       }
     });
 
     // Only draw trendline if we have enough points and not opHead
-    if (points.length <= degree || isOpHead) return;
+    if (points.length < 2 || isOpHead) return;
+
+    // Extract x and y values for coefficient calculation using actual values
+    const xValues = points.map(point => point.actualFlow);
+    const yValues = points.map(point => 
+      point.isEfficiency 
+        ? point.actualEfficiency!
+        : point.actualHead!
+    );
+
+    // Calculate coefficients using actual values
+    const coefficients = calculatePolynomialCoefficients(xValues, yValues, degree);
 
     // Draw curve
     ctx.beginPath();
