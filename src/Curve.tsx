@@ -21,6 +21,11 @@ interface SystemPoint extends Point {
   curveId: number;
 }
 
+interface EfficiencyIntersection {
+  flow: number;
+  efficiency: number;
+}
+
 interface IntersectionPoint {
   curveId: number;
   actualFlow: number;
@@ -155,6 +160,8 @@ const PumpCurveNew2: React.FC = () => {
   const [comparisonData, setComparisonData] = useState<ComparisonData | null>(null);
   const [maxRpm, setMaxRpm] = useState<number>(100);
   const [tempInputValues, setTempInputValues] = useState<{[key: string]: string}>({});
+  const [speedCurves, setSpeedCurves] = useState<number[]>([100, 100, 0, 0]); // curve1 default 100%, curve2 default 100%
+
 
   const SYSTEM_COLORS = ['#FF9800', '#9C27B0', '#009688', '#795548'];
 
@@ -179,10 +186,48 @@ const PumpCurveNew2: React.FC = () => {
     const c = (sumY - a * sumZ) / n;
     return { a, c };
   }
+  const sortedPoints = [...points].sort((a, b) => a.actualFlow - b.actualFlow);
+  const sortedEfficiencyPoints = [...efficiencyPoints].sort((a, b) => a.actualFlow - b.actualFlow);
+  const sortedVfdPoints = [...vfdPoints].sort((a, b) => a.actualFlow - b.actualFlow);
+  function sortedSystemCurves(curveId: number) {
+    return systemPoints
+      .map((point, idx) => ({ ...point, __index: idx } as SystemPoint & { __index: number }))
+      .filter(point => point.curveId === curveId)
+      .sort((a, b) => a.actualFlow - b.actualFlow);
+  }
+  const curveColors = ['#0000FF', '#1E90FF', '#6A5ACD', '#00BFFF'];
+  const effColors = ['#FF0000', '#FF7F50', '#FF1493', '#FF69B4'];
+  const baseSpeed = speedCurves[0] || 100;
+  const derivedHeadCurves = speedCurves.map((spd, idx) => {
+    if (idx > 0 && (!spd || spd <= 0)) return [];
+    const ratio = spd / baseSpeed;
+    return sortedPoints.map(p => ({
+      actualFlow: p.actualFlow * ratio,
+      actualHead: (p.actualHead ?? 0) * ratio * ratio,
+      curveId: idx + 1
+    }));
+  });
+  const derivedEffCurves = speedCurves.map((spd, idx) => {
+    if (idx > 0 && (!spd || spd <= 0)) return [];
+    const ratio = spd / baseSpeed;
+    return sortedEfficiencyPoints.map(p => ({
+      actualFlow: p.actualFlow * ratio,
+      actualEfficiency: p.actualEfficiency ?? 0,
+      isEfficiency: true,
+      curveId: idx + 1
+    }));
+  });
+
   const systemIntersections = React.useMemo<IntersectionPoint[]>(() => {
-    if (points.length < 2 || systemPoints.length < 2) return [];
-    const xVals = points.map(p => p.actualFlow);
-    const yVals = points.map(p => p.actualHead!);
+    if (systemPoints.length < 2) return [];
+    const baseHeadCurve =
+      derivedHeadCurves[1] && derivedHeadCurves[1].length >= 2
+        ? derivedHeadCurves[1]
+        : derivedHeadCurves[0];
+    if (!baseHeadCurve || baseHeadCurve.length < 2) return [];
+
+    const xVals = baseHeadCurve.map(p => p.actualFlow);
+    const yVals = baseHeadCurve.map(p => p.actualHead!);
     const headCoefficients = calculatePolynomialCoefficients(xVals, yVals, headDegree);
     if (!headCoefficients.length) return [];
 
@@ -238,21 +283,26 @@ const PumpCurveNew2: React.FC = () => {
     });
 
     return intersections;
-  }, [points, systemPoints, headDegree, maxFlow]);
+  }, [systemPoints, headDegree, maxFlow, speedCurves, derivedHeadCurves, sortedSystemCurves]);
+
+  const efficiencyIntersections = React.useMemo<EfficiencyIntersection[]>(() => {
+    const curve = derivedEffCurves[1]; // use speed curve #2
+    if (!curve || curve.length < 2) return [];
+    if (!systemIntersections.length) return [];
+    const xVals = curve.map(p => p.actualFlow);
+    const yVals = curve.map(p => p.actualEfficiency!);
+    const coeffs = calculatePolynomialCoefficients(xVals, yVals, efficiencyDegree);
+    if (!coeffs.length) return [];
+    return systemIntersections.map(intPoint => {
+      const flow = intPoint.actualFlow;
+      const eff = coeffs.reduce((sum, c, i) => sum + c * Math.pow(flow, i), 0);
+      return { flow, efficiency: eff };
+    });
+  }, [derivedEffCurves, efficiencyDegree, systemIntersections]);
 
   // Add refs for previous range values
   const prevMaxFlowRef = useRef(maxFlow);
   const prevMaxHeadRef = useRef(maxHead);
-
-  const sortedPoints = [...points].sort((a, b) => a.actualFlow - b.actualFlow);
-  const sortedEfficiencyPoints = [...efficiencyPoints].sort((a, b) => a.actualFlow - b.actualFlow);
-  const sortedVfdPoints = [...vfdPoints].sort((a, b) => a.actualFlow - b.actualFlow);
-  function sortedSystemCurves(curveId: number) {
-    return systemPoints
-      .map((point, idx) => ({ ...point, __index: idx } as SystemPoint & { __index: number }))
-      .filter(point => point.curveId === curveId)
-      .sort((a, b) => a.actualFlow - b.actualFlow);
-  }
 
   function calculatePolynomialCoefficients(xValues: number[], yValues: number[], degree: number) {
     const X: number[][] = [];
@@ -996,11 +1046,43 @@ const PumpCurveNew2: React.FC = () => {
 
     // Draw main case curves on top
     ctx.lineWidth = 2; // Reset to normal width for main case
-    if (points.length > 0) {
-      drawPolynomialTrendline(ctx, points, headDegree, '#0000FF', padding, drawingWidth, drawingHeight);
-    }
-    if (efficiencyPoints.length > 0) {
-      drawPolynomialTrendline(ctx, efficiencyPoints, efficiencyDegree, '#FF0000', padding, drawingWidth, drawingHeight);
+    derivedHeadCurves.forEach((curve, idx) => {
+      if (curve.length === 0) return;
+      drawPolynomialTrendline(
+        ctx,
+        curve,
+        headDegree,
+        curveColors[idx] ?? '#0000FF',
+        padding,
+        drawingWidth,
+        drawingHeight
+      );
+    });
+    derivedEffCurves.forEach((curve, idx) => {
+      if (curve.length === 0) return;
+      drawPolynomialTrendline(
+        ctx,
+        curve,
+        efficiencyDegree,
+        effColors[idx] ?? '#FF0000',
+        padding,
+        drawingWidth,
+        drawingHeight
+      );
+    });
+    // Draw efficiency intersection markers on curve #2
+    if (efficiencyIntersections.length > 0) {
+      efficiencyIntersections.forEach(p => {
+        const x = padding.left + (p.flow / maxFlow) * drawingWidth;
+        const y = padding.top + (1 - p.efficiency / maxEfficiency) * drawingHeight;
+        ctx.beginPath();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = effColors[1] ?? '#FF0000';
+        ctx.fillStyle = '#fff';
+        ctx.arc(x, y, 6, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.stroke();
+      });
     }
     if (vfdPoints.length > 0) {
       drawPolynomialTrendline(ctx, vfdPoints, 0, '#00AA00', padding, drawingWidth, drawingHeight, true);
@@ -1393,11 +1475,20 @@ const PumpCurveNew2: React.FC = () => {
       head: point.actualHead!.toFixed(1)
     }));
 
-    const efficiencyData = sortedEfficiencyPoints.map((point, index) => ({
-      no: index + 1,
-      flow: point.actualFlow.toFixed(1),
-      efficiency: point.actualEfficiency!.toFixed(1)
-    }));
+    const efficiencyData = [
+      ...sortedEfficiencyPoints.map((point, index) => ({
+        no: index + 1,
+        flow: point.actualFlow.toFixed(1),
+        efficiency: point.actualEfficiency!.toFixed(1),
+        mark: ''
+      })),
+      ...efficiencyIntersections.map((p, idx) => ({
+        no: sortedEfficiencyPoints.length + idx + 1,
+        flow: p.flow.toFixed(1),
+        efficiency: p.efficiency.toFixed(1),
+        mark: '(INT)'
+      }))
+    ];
 
     const vfdData = sortedVfdPoints.map((point, index) => {
       const { speedRatio, vfdEfficiency } = calculateVfdEfficiency(point);
@@ -1442,7 +1533,7 @@ const PumpCurveNew2: React.FC = () => {
     tableText += "\nEfficiency Points:\n";
     tableText += "No\tFlow\tEfficiency\n";
     efficiencyData.forEach(row => {
-      tableText += `${row.no}\t${row.flow}\t${row.efficiency}\n`;
+      tableText += `${row.no}${row.mark ? ' ' + row.mark : ''}\t${row.flow}\t${row.efficiency}\n`;
     });
 
     tableText += "\nVFD Points:\n";
@@ -1496,10 +1587,17 @@ const PumpCurveNew2: React.FC = () => {
           actualFlow: point.actualFlow.toFixed(1),
           actualHead: point.actualHead!.toFixed(1)
         })),
-        efficiencyPoints: sortedEfficiencyPoints.map(point => ({
-          actualFlow: point.actualFlow.toFixed(1),
-          actualEfficiency: point.actualEfficiency!.toFixed(1)
-        })),
+        efficiencyPoints: [
+          ...sortedEfficiencyPoints.map(point => ({
+            actualFlow: point.actualFlow.toFixed(1),
+            actualEfficiency: point.actualEfficiency!.toFixed(1)
+          })),
+          ...efficiencyIntersections.map(p => ({
+            actualFlow: p.flow.toFixed(1),
+            actualEfficiency: p.efficiency.toFixed(1),
+            isIntersection: true
+          }))
+        ],
         vfdPoints: sortedVfdPoints.map(point => {
           const { speedRatio, vfdEfficiency } = calculateVfdEfficiency(point);
           return {
@@ -2613,6 +2711,28 @@ const PumpCurveNew2: React.FC = () => {
                 className="w-24 h-8 bg-white text-xs"
               />
             </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Label className="text-xs font-semibold">Speed Curves (%):</Label>
+              {[1,2,3,4].map((id)=> (
+                <div key={id} className="flex items-center gap-1">
+                  <span className="text-[11px] font-semibold" style={{color: curveColors[id-1] ?? '#000'}}>{id}</span>
+                  <Input
+                    type="number"
+                    value={speedCurves[id-1] || ''}
+                    placeholder={id === 1 ? '100' : 'enter'}
+                    min={1}
+                    max={200}
+                    readOnly={id === 1}
+                    onChange={(e)=>{
+                      if (id === 1) return;
+                      const val = parseFloat(e.target.value);
+                      setSpeedCurves(prev => prev.map((v, idx)=> idx===id-1 ? (isNaN(val) ? 0 : val) : v));
+                    }}
+                    className={`w-16 h-8 text-xs ${id===1 ? 'bg-gray-100 text-gray-600' : id===2 ? 'bg-yellow-100' : 'bg-white'}`}
+                  />
+                </div>
+              ))}
+            </div>
             <div className="flex items-center gap-4">
               <Label className="font-medium text-xs">Record mode:</Label>
               <div className="flex items-center bg-white rounded-lg border border-gray-200">
@@ -2996,6 +3116,21 @@ const PumpCurveNew2: React.FC = () => {
                       </td>
                     </tr>
                   ))}
+                  {efficiencyIntersections.map((p, idx) => {
+                    const rowNo = sortedEfficiencyPoints.length + idx + 1;
+                    return (
+                      <tr key={`eff-int-${idx}`} className="bg-pink-50">
+                        <td className="border p-1 text-left">
+                          {rowNo} <span className="text-[10px] text-gray-500">(INT)</span>
+                        </td>
+                        <td className="border p-1 text-left text-gray-700 font-semibold">{p.flow.toFixed(1)}</td>
+                        <td className="border p-1 text-left text-gray-700 font-semibold">
+                          {p.efficiency.toFixed(1)}
+                        </td>
+                        <td className="border p-1 text-left text-center text-gray-400 text-[11px]">—</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
                 </div>
