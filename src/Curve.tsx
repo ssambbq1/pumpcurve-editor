@@ -16,6 +16,17 @@ interface Point {
   isEfficiency?: boolean;
 }
 
+interface SystemPoint extends Point {
+  actualHead: number;
+  curveId: number;
+}
+
+interface IntersectionPoint {
+  curveId: number;
+  actualFlow: number;
+  actualHead: number;
+}
+
 interface BepPoint {
   actualFlow: number;
   actualHead: number;
@@ -65,6 +76,10 @@ interface LoadedData {
     headPoints?: DefaultDataPoint[];
     efficiencyPoints?: DefaultDataPoint[];
     vfdPoints?: DefaultDataPoint[];
+    systemCurves?: {
+      curveId: number;
+      points: DefaultDataPoint[];
+    }[];
   };
   bepPoint?: {
     actualFlow: string;
@@ -77,12 +92,13 @@ interface HistoryState {
   points: Point[];
   efficiencyPoints: Point[];
   vfdPoints: Point[];
+  systemPoints: SystemPoint[];
 }
 
 interface DraggedPoint {
   index: number;
   field: 'efficiency' | 'head';
-  type: string;
+  type: 'head' | 'efficiency' | 'vfd' | 'system';
 }
 
 interface ComparisonData {
@@ -90,6 +106,10 @@ interface ComparisonData {
     headPoints?: DefaultDataPoint[];
     efficiencyPoints?: DefaultDataPoint[];
     vfdPoints?: DefaultDataPoint[];
+    systemCurves?: {
+      curveId: number;
+      points: DefaultDataPoint[];
+    }[];
   };
   maxValues?: {
     actualHead?: number;
@@ -102,7 +122,9 @@ const PumpCurveNew2: React.FC = () => {
   const [points, setPoints] = useState<Point[]>([]);
   const [efficiencyPoints, setEfficiencyPoints] = useState<Point[]>([]);
   const [vfdPoints, setVfdPoints] = useState<Point[]>([]);
-  const [selectedMode, setSelectedMode] = useState<'head' | 'efficiency' | 'vfd'>('head');
+  const [systemPoints, setSystemPoints] = useState<SystemPoint[]>([]);
+  const [selectedMode, setSelectedMode] = useState<'head' | 'efficiency' | 'vfd' | 'system'>('head');
+  const [activeSystemCurve, setActiveSystemCurve] = useState<number>(1);
   const [headDegree, setHeadDegree] = useState(4);
   const [efficiencyDegree, setEfficiencyDegree] = useState(4);
   const [maxHead, setMaxHead] = useState<number>(100);
@@ -110,7 +132,7 @@ const PumpCurveNew2: React.FC = () => {
   const [maxEfficiency, setMaxEfficiency] = useState<number>(100);
   const [isDragging, setIsDragging] = useState(false);
   const [draggedPoint, setDraggedPoint] = useState<DraggedPoint | null>(null);
-  const [dragMode, setDragMode] = useState<'head' | 'efficiency' | 'vfd' | null>(null);
+  const [dragMode, setDragMode] = useState<'head' | 'efficiency' | 'vfd' | 'system' | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [headEquation, setHeadEquation] = useState<string>('');
   const [efficiencyEquation, setEfficiencyEquation] = useState<string>('');
@@ -134,6 +156,90 @@ const PumpCurveNew2: React.FC = () => {
   const [maxRpm, setMaxRpm] = useState<number>(100);
   const [tempInputValues, setTempInputValues] = useState<{[key: string]: string}>({});
 
+  const SYSTEM_COLORS = ['#FF9800', '#9C27B0', '#009688', '#795548'];
+
+  // Fit system curve to y = a*x^2 + c (linear term forced to 0)
+  function computeSystemCoeffs(pts: SystemPoint[]): { a: number; c: number } | null {
+    if (pts.length === 0) return null;
+    const zVals = pts.map(p => Math.pow(p.actualFlow, 2));
+    const yVals = pts.map(p => p.actualHead ?? 0);
+    if (pts.length === 1) {
+      return { a: 0, c: yVals[0] };
+    }
+    const n = pts.length;
+    const sumZ = zVals.reduce((s, z) => s + z, 0);
+    const sumZ2 = zVals.reduce((s, z) => s + z * z, 0);
+    const sumY = yVals.reduce((s, y) => s + y, 0);
+    const sumZY = zVals.reduce((s, z, i) => s + z * yVals[i], 0);
+    const denom = n * sumZ2 - sumZ * sumZ;
+    if (Math.abs(denom) < 1e-9) {
+      return { a: 0, c: sumY / n };
+    }
+    const a = (n * sumZY - sumZ * sumY) / denom;
+    const c = (sumY - a * sumZ) / n;
+    return { a, c };
+  }
+  const systemIntersections = React.useMemo<IntersectionPoint[]>(() => {
+    if (points.length < 2 || systemPoints.length < 2) return [];
+    const xVals = points.map(p => p.actualFlow);
+    const yVals = points.map(p => p.actualHead!);
+    const headCoefficients = calculatePolynomialCoefficients(xVals, yVals, headDegree);
+    if (!headCoefficients.length) return [];
+
+    const evalPoly = (coeffs: number[], x: number) =>
+      coeffs.reduce((sum, coeff, i) => sum + coeff * Math.pow(x, i), 0);
+
+    const intersections: IntersectionPoint[] = [];
+
+    [1, 2, 3, 4].forEach(curveId => {
+      const curve = sortedSystemCurves(curveId);
+      if (curve.length < 2) return;
+
+      const sysCoeffs = computeSystemCoeffs(curve);
+      if (!sysCoeffs) return;
+
+      const evalHead = (x: number) => evalPoly(headCoefficients, x);
+      const evalSys = (x: number) => sysCoeffs.a * x * x + sysCoeffs.c;
+
+      const minX = Math.max(0, Math.min(...curve.map(p => p.actualFlow)));
+      const maxX = Math.min(maxFlow, Math.max(...curve.map(p => p.actualFlow)));
+      const steps = 400;
+      const step = (maxX - minX) / steps;
+      if (step === 0) return;
+
+      let prevX = minX;
+      let prevDiff = evalHead(prevX) - evalSys(prevX);
+      for (let i = 1; i <= steps; i++) {
+        const x = minX + step * i;
+        const diff = evalHead(x) - evalSys(x);
+        if (prevDiff === 0) {
+          intersections.push({ curveId, actualFlow: prevX, actualHead: evalHead(prevX) });
+        } else if (diff === 0 || prevDiff * diff < 0) {
+          // sign change, bisection
+          let low = prevX;
+          let high = x;
+          let mid = (low + high) / 2;
+          for (let iter = 0; iter < 40; iter++) {
+            mid = (low + high) / 2;
+            const dmid = evalHead(mid) - evalSys(mid);
+            if (Math.abs(dmid) < 1e-6) break;
+            if (prevDiff * dmid <= 0) {
+              high = mid;
+            } else {
+              low = mid;
+              prevDiff = dmid;
+            }
+          }
+          intersections.push({ curveId, actualFlow: mid, actualHead: evalHead(mid) });
+        }
+        prevX = x;
+        prevDiff = diff;
+      }
+    });
+
+    return intersections;
+  }, [points, systemPoints, headDegree, maxFlow]);
+
   // Add refs for previous range values
   const prevMaxFlowRef = useRef(maxFlow);
   const prevMaxHeadRef = useRef(maxHead);
@@ -141,8 +247,14 @@ const PumpCurveNew2: React.FC = () => {
   const sortedPoints = [...points].sort((a, b) => a.actualFlow - b.actualFlow);
   const sortedEfficiencyPoints = [...efficiencyPoints].sort((a, b) => a.actualFlow - b.actualFlow);
   const sortedVfdPoints = [...vfdPoints].sort((a, b) => a.actualFlow - b.actualFlow);
+  function sortedSystemCurves(curveId: number) {
+    return systemPoints
+      .map((point, idx) => ({ ...point, __index: idx } as SystemPoint & { __index: number }))
+      .filter(point => point.curveId === curveId)
+      .sort((a, b) => a.actualFlow - b.actualFlow);
+  }
 
-  const calculatePolynomialCoefficients = (xValues: number[], yValues: number[], degree: number) => {
+  function calculatePolynomialCoefficients(xValues: number[], yValues: number[], degree: number) {
     const X: number[][] = [];
     const y: number[] = [];
     
@@ -155,9 +267,9 @@ const PumpCurveNew2: React.FC = () => {
     }
     
     return solveLinearSystem(X, y);
-  };
+  }
 
-  const solveLinearSystem = (X: number[][], y: number[]): number[] => {
+  function solveLinearSystem(X: number[][], y: number[]): number[] {
     const n = X[0].length;
     const m = X.length;
     
@@ -206,7 +318,7 @@ const PumpCurveNew2: React.FC = () => {
     }
     
     return solution;
-  };
+  }
 
   const calculateActualPolynomialCoefficients = (points: Point[], degree: number) => {
     if (points.length < 2) return [];
@@ -332,6 +444,62 @@ const PumpCurveNew2: React.FC = () => {
     ctx.stroke();
   };
 
+  const drawSystemCurve = (
+    ctx: CanvasRenderingContext2D,
+    points: SystemPoint[],
+    color: string,
+    padding: { left: number; right: number; top: number; bottom: number },
+    drawingWidth: number,
+    drawingHeight: number
+  ) => {
+    if (points.length === 0) return;
+
+    const sorted = [...points].sort((a, b) => a.actualFlow - b.actualFlow);
+
+    const coeffs = computeSystemCoeffs(sorted);
+    if (coeffs && sorted.length > 0) {
+      const minX = Math.min(...sorted.map(p => p.actualFlow));
+      const maxX = Math.max(...sorted.map(p => p.actualFlow));
+      const step = (maxX - minX) / 200 || maxX || 1;
+      ctx.beginPath();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      let first = true;
+      for (let x = minX; x <= maxX; x += step) {
+        const y = coeffs.a * x * x + coeffs.c;
+        if (y < 0 || y > maxHead * 1.2) continue;
+        const cx = padding.left + (x / maxFlow) * drawingWidth;
+        const cy = padding.top + (1 - y / maxHead) * drawingHeight;
+        if (first) {
+          ctx.moveTo(cx, cy);
+          first = false;
+        } else {
+          ctx.lineTo(cx, cy);
+        }
+      }
+      ctx.stroke();
+    }
+
+    // Draw markers (diamond)
+    sorted.forEach(point => {
+      const x = padding.left + (point.actualFlow / maxFlow) * drawingWidth;
+      const y = padding.top + (1 - (point.actualHead || 0) / maxHead) * drawingHeight;
+
+      ctx.beginPath();
+      ctx.fillStyle = color;
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1;
+      const size = 5;
+      ctx.moveTo(x, y - size);
+      ctx.lineTo(x + size, y);
+      ctx.lineTo(x, y + size);
+      ctx.lineTo(x - size, y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    });
+  };
+
   useEffect(() => {
     const handleResize = () => {
     const canvas = canvasRef.current;
@@ -371,7 +539,7 @@ const PumpCurveNew2: React.FC = () => {
       window.removeEventListener('resize', handleResize);
       resizeObserver.disconnect();
     };
-  }, [points, efficiencyPoints, vfdPoints, maxFlow, maxHead, maxEfficiency, backgroundImage, imageOpacity, headDegree, efficiencyDegree, comparisonData]); // Add comparisonData to dependencies
+  }, [points, efficiencyPoints, vfdPoints, systemPoints, maxFlow, maxHead, maxEfficiency, backgroundImage, imageOpacity, headDegree, efficiencyDegree, comparisonData]); // Add comparisonData to dependencies
 
   // Add a new useEffect for immediate canvas updates when comparisonData changes
   useEffect(() => {
@@ -786,9 +954,45 @@ const PumpCurveNew2: React.FC = () => {
           drawPolynomialTrendline(ctx, comparisonVfdPoints, 0, '#808080', padding, drawingWidth, drawingHeight, true);
         }
       }
+
+      // Draw comparison system curves
+      if (comparisonData.points.systemCurves && comparisonData.points.systemCurves.length > 0) {
+        comparisonData.points.systemCurves.forEach((curve: { curveId?: number; points?: DefaultDataPoint[] }) => {
+          if (!curve.points) return;
+          const curvePoints = curve.points.map(point => ({
+            actualFlow: Math.max(0, Math.min(maxFlow, Number(point.actualFlow ?? point.flow))),
+            actualHead: Math.max(0, Math.min(maxHead, Number(point.actualHead ?? point.head)))
+          })).filter(point => !isNaN(point.actualFlow) && !isNaN(point.actualHead));
+          if (curvePoints.length > 0) {
+            const color = '#808080';
+            drawSystemCurve(ctx, curvePoints as SystemPoint[], color, padding, drawingWidth, drawingHeight);
+          }
+        });
+      }
       
       ctx.setLineDash([]); // Reset dash pattern
     }
+
+    // Draw system curves
+    [1, 2, 3, 4].forEach((curveId) => {
+      const curvePoints = systemPoints.filter(point => point.curveId === curveId);
+      if (curvePoints.length > 0) {
+        drawSystemCurve(ctx, curvePoints, SYSTEM_COLORS[curveId - 1], padding, drawingWidth, drawingHeight);
+      }
+      // draw intersections as hollow circles
+      const ints = systemIntersections.filter(int => int.curveId === curveId);
+      ints.forEach(intPoint => {
+        const x = padding.left + (intPoint.actualFlow / maxFlow) * drawingWidth;
+        const y = padding.top + (1 - intPoint.actualHead / maxHead) * drawingHeight;
+        ctx.beginPath();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = SYSTEM_COLORS[curveId - 1];
+        ctx.fillStyle = '#fff';
+        ctx.arc(x, y, 6, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.stroke();
+      });
+    });
 
     // Draw main case curves on top
     ctx.lineWidth = 2; // Reset to normal width for main case
@@ -909,6 +1113,20 @@ const PumpCurveNew2: React.FC = () => {
       setDragMode('vfd');
       return;
     }
+
+    closestPoint = findClosestPoint(systemPoints, mouseX, mouseY);
+    if (closestPoint) {
+      e.preventDefault();
+      const index = systemPoints.indexOf(closestPoint as SystemPoint);
+      setDraggedPoint({
+        index,
+        field: 'head',
+        type: 'system'
+      });
+      setIsDragging(true);
+      setDragMode('system');
+      return;
+    }
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -967,6 +1185,15 @@ const PumpCurveNew2: React.FC = () => {
       const newPoints = [...vfdPoints];
       newPoints[draggedPoint.index] = updatedPoint;
       setVfdPoints(newPoints);
+    } else if (draggedPoint.type === 'system') {
+      const newPoints = [...systemPoints];
+      const systemUpdated: SystemPoint = {
+        actualFlow: updatedPoint.actualFlow,
+        actualHead: updatedPoint.actualHead ?? 0,
+        curveId: newPoints[draggedPoint.index].curveId
+      };
+      newPoints[draggedPoint.index] = systemUpdated;
+      setSystemPoints(newPoints);
     }
 
     // Force redraw
@@ -986,7 +1213,8 @@ const PumpCurveNew2: React.FC = () => {
         let newPoints = [...points];
         let newEfficiencyPoints = [...efficiencyPoints];
         let newVfdPoints = [...vfdPoints];
-        saveToHistory(newPoints, newEfficiencyPoints, newVfdPoints);
+        let newSystemPoints = [...systemPoints];
+        saveToHistory(newPoints, newEfficiencyPoints, newVfdPoints, newSystemPoints);
       }
     }
     setIsDragging(false);
@@ -1017,8 +1245,9 @@ const PumpCurveNew2: React.FC = () => {
     const headPoint = findClosestPoint(points, mouseX, mouseY);
     const effPoint = findClosestPoint(efficiencyPoints, mouseX, mouseY);
     const vfdPoint = findClosestPoint(vfdPoints, mouseX, mouseY);
+    const systemPoint = findClosestPoint(systemPoints, mouseX, mouseY);
     
-    if (headPoint || effPoint || vfdPoint) return; // Don't create new point if near any existing point
+    if (headPoint || effPoint || vfdPoint || systemPoint) return; // Don't create new point if near any existing point
 
     // Calculate drawing dimensions
     const drawingWidth = canvas.width - padding.left - padding.right;
@@ -1039,35 +1268,44 @@ const PumpCurveNew2: React.FC = () => {
     const actualValue = (1 - yPercent) * (selectedMode === 'efficiency' ? maxEfficiency : maxHead);
 
     // Create a new point with actual values
-    const newPoint: Point = {
-      actualFlow: Math.max(0, Math.min(maxFlow, actualFlow)),
-      ...(selectedMode === 'efficiency'
-        ? { 
-            actualEfficiency: Math.max(0, Math.min(maxEfficiency, actualValue)),
-            isEfficiency: true 
-          }
-        : { actualHead: Math.max(0, Math.min(maxHead, actualValue)) }
-      )
-    };
+    if (selectedMode === 'system') {
+      const newPoint: SystemPoint = {
+        actualFlow: Math.max(0, Math.min(maxFlow, actualFlow)),
+        actualHead: Math.max(0, Math.min(maxHead, actualValue)),
+        curveId: activeSystemCurve
+      };
+      const updatedSystem = [...systemPoints, newPoint];
+      setSystemPoints(updatedSystem);
+      saveToHistory(points, efficiencyPoints, vfdPoints, updatedSystem);
+    } else {
+      const newPoint: Point = {
+        actualFlow: Math.max(0, Math.min(maxFlow, actualFlow)),
+        ...(selectedMode === 'efficiency'
+          ? { 
+              actualEfficiency: Math.max(0, Math.min(maxEfficiency, actualValue)),
+              isEfficiency: true 
+            }
+          : { actualHead: Math.max(0, Math.min(maxHead, actualValue)) }
+        )
+      };
 
-    // Add the new point to the appropriate array
-    if (selectedMode === 'efficiency') {
-      setEfficiencyPoints(prev => [...prev, newPoint]);
-    } else if (selectedMode === 'head') {
-      setPoints(prev => [...prev, newPoint]);
-    } else if (selectedMode === 'vfd') {
-      setVfdPoints(prev => [...prev, newPoint]);
+      let updatedPoints = points;
+      let updatedEfficiency = efficiencyPoints;
+      let updatedVfd = vfdPoints;
+
+      if (selectedMode === 'efficiency') {
+        updatedEfficiency = [...efficiencyPoints, newPoint];
+        setEfficiencyPoints(updatedEfficiency);
+      } else if (selectedMode === 'head') {
+        updatedPoints = [...points, newPoint];
+        setPoints(updatedPoints);
+      } else if (selectedMode === 'vfd') {
+        updatedVfd = [...vfdPoints, newPoint];
+        setVfdPoints(updatedVfd);
+      }
+
+      saveToHistory(updatedPoints, updatedEfficiency, updatedVfd, systemPoints);
     }
-
-    // Save to history
-    const newHistoryState = {
-      points: selectedMode === 'head' ? [...points, newPoint] : points,
-      efficiencyPoints: selectedMode === 'efficiency' ? [...efficiencyPoints, newPoint] : efficiencyPoints,
-      vfdPoints: selectedMode === 'vfd' ? [...vfdPoints, newPoint] : vfdPoints
-    };
-
-    setHistory(prev => [...prev.slice(0, currentHistoryIndex + 1), newHistoryState]);
-    setCurrentHistoryIndex(prev => prev + 1);
 
     // Force redraw
     const ctx = canvas.getContext('2d');
@@ -1076,10 +1314,11 @@ const PumpCurveNew2: React.FC = () => {
     }
   };
 
-  const handleEditPoint = (index: number, type: 'head' | 'efficiency' | 'vfd', actualFlow: number, actualValue: number) => {
+  const handleEditPoint = (index: number, type: 'head' | 'efficiency' | 'vfd' | 'system', actualFlow: number, actualValue: number) => {
     let newPoints = [...points];
     let newEfficiencyPoints = [...efficiencyPoints];
     let newVfdPoints = [...vfdPoints];
+    let newSystemPoints = [...systemPoints];
 
     if (type === 'head') {
       newPoints[index] = { 
@@ -1100,15 +1339,23 @@ const PumpCurveNew2: React.FC = () => {
         actualHead: actualValue
       };
       setVfdPoints(newVfdPoints);
+    } else if (type === 'system') {
+      newSystemPoints[index] = { 
+        actualFlow,
+        actualHead: actualValue,
+        curveId: newSystemPoints[index].curveId
+      };
+      setSystemPoints(newSystemPoints);
     }
 
-    saveToHistory(newPoints, newEfficiencyPoints, newVfdPoints);
+    saveToHistory(newPoints, newEfficiencyPoints, newVfdPoints, newSystemPoints);
   };
 
-  const handleDeletePoint = (index: number, type: 'head' | 'efficiency' | 'vfd') => {
+  const handleDeletePoint = (index: number, type: 'head' | 'efficiency' | 'vfd' | 'system') => {
     let newPoints = [...points];
     let newEfficiencyPoints = [...efficiencyPoints];
     let newVfdPoints = [...vfdPoints];
+    let newSystemPoints = [...systemPoints];
 
     if (type === 'head') {
       newPoints = points.filter((_, i) => i !== index);
@@ -1119,9 +1366,12 @@ const PumpCurveNew2: React.FC = () => {
     } else if (type === 'vfd') {
       newVfdPoints = vfdPoints.filter((_, i) => i !== index);
       setVfdPoints(newVfdPoints);
+    } else if (type === 'system') {
+      newSystemPoints = systemPoints.filter((_, i) => i !== index);
+      setSystemPoints(newSystemPoints);
     }
 
-    saveToHistory(newPoints, newEfficiencyPoints, newVfdPoints);
+    saveToHistory(newPoints, newEfficiencyPoints, newVfdPoints, newSystemPoints);
   };
 
   const handleCopyWithEffect = (action: () => void, buttonId: string) => {
@@ -1160,6 +1410,28 @@ const PumpCurveNew2: React.FC = () => {
       };
     });
 
+    const systemData = [1, 2, 3, 4].map(curveId => {
+      const rows: { no: number; flow: string; head: string; mark?: string }[] = [];
+      sortedSystemCurves(curveId).forEach((point, idx) => {
+        rows.push({
+          no: idx + 1,
+          flow: point.actualFlow.toFixed(1),
+          head: point.actualHead?.toFixed(1) ?? ''
+        });
+      });
+      const ints = systemIntersections.filter(int => int.curveId === curveId);
+      const base = rows.length;
+      ints.forEach((p, i) => {
+        rows.push({
+          no: base + i + 1,
+          flow: p.actualFlow.toFixed(1),
+          head: p.actualHead.toFixed(1),
+          mark: '(INT)'
+        });
+      });
+      return { curveId, rows };
+    }).filter(curve => curve.rows.length > 0);
+
     // Create table format string
     let tableText = "Head Points:\n";
     tableText += "No\tFlow\tHead\n";
@@ -1178,6 +1450,17 @@ const PumpCurveNew2: React.FC = () => {
     vfdData.forEach(row => {
       tableText += `${row.no}\t${row.flow}\t${row.head}\t${row.speed}\t${row.efficiency}\n`;
     });
+
+    if (systemData.length > 0) {
+      tableText += "\nSystem Curves:\n";
+      systemData.forEach(curve => {
+        tableText += `Curve ${curve.curveId}\nNo\tFlow\tHead\n`;
+        curve.rows.forEach(row => {
+          tableText += `${row.no}\t${row.flow}\t${row.head}${row.mark ? '\t' + row.mark : ''}\n`;
+        });
+        tableText += "\n";
+      });
+    }
 
     navigator.clipboard.writeText(tableText);
   };
@@ -1225,7 +1508,23 @@ const PumpCurveNew2: React.FC = () => {
             speed: speedRatio.toFixed(1),
             actualEfficiency: vfdEfficiency.toFixed(1)
           };
-        })
+        }),
+        systemCurves: [1, 2, 3, 4].map(curveId => ({
+          curveId,
+          points: [
+            ...sortedSystemCurves(curveId).map(point => ({
+              actualFlow: point.actualFlow.toFixed(1),
+              actualHead: point.actualHead?.toFixed(1) ?? ''
+            })),
+            ...systemIntersections
+              .filter(int => int.curveId === curveId)
+              .map(p => ({
+                actualFlow: p.actualFlow.toFixed(1),
+                actualHead: p.actualHead.toFixed(1),
+                isIntersection: true
+              }))
+          ]
+        })).filter(curve => curve.points.length > 0)
       },
       bepPoint: bep ? {
         actualFlow: bep.actualFlow.toFixed(1),
@@ -1258,6 +1557,7 @@ const PumpCurveNew2: React.FC = () => {
       setPoints([]);
       setEfficiencyPoints([]);
       setVfdPoints([]);
+      setSystemPoints([]);
       setHistory([]);
       setCurrentHistoryIndex(-1);
       setBackgroundImage(null);
@@ -1294,6 +1594,7 @@ const PumpCurveNew2: React.FC = () => {
       const newPoints: Point[] = [];
       const newEfficiencyPoints: Point[] = [];
       const newVfdPoints: Point[] = [];
+      const newSystemPoints: SystemPoint[] = [];
 
       if (Array.isArray(data.points?.headPoints)) {
         data.points.headPoints.forEach((point: { [key: string]: any }) => {
@@ -1350,11 +1651,35 @@ const PumpCurveNew2: React.FC = () => {
         });
       }
 
+      if (Array.isArray(data.points?.systemCurves)) {
+        data.points.systemCurves.forEach((curve: { curveId?: number; points?: DefaultDataPoint[] }, index: number) => {
+          const curveId = curve.curveId ? Number(curve.curveId) : index + 1;
+          if (!curve.points || isNaN(curveId) || curveId < 1 || curveId > 4) return;
+
+          curve.points.forEach(point => {
+            const actualFlow = point.actualFlow || point.flow;
+            const actualHead = point.actualHead || point.head;
+
+            if (actualFlow !== undefined && actualHead !== undefined) {
+              const validPoint: SystemPoint = {
+                actualFlow: Number(actualFlow),
+                actualHead: Number(actualHead),
+                curveId
+              };
+              if (!isNaN(validPoint.actualFlow) && !isNaN(validPoint.actualHead)) {
+                newSystemPoints.push(validPoint);
+              }
+            }
+          });
+        });
+      }
+
       // Create new history state
       const newHistory = [{
         points: newPoints,
         efficiencyPoints: newEfficiencyPoints,
-        vfdPoints: newVfdPoints
+        vfdPoints: newVfdPoints,
+        systemPoints: newSystemPoints
       }];
 
       // Update all states in a single batch
@@ -1374,6 +1699,7 @@ const PumpCurveNew2: React.FC = () => {
         setPoints(newPoints);
         setEfficiencyPoints(newEfficiencyPoints);
         setVfdPoints(newVfdPoints);
+        setSystemPoints(newSystemPoints);
         setHistory(newHistory);
         setCurrentHistoryIndex(0);
 
@@ -1405,6 +1731,7 @@ const PumpCurveNew2: React.FC = () => {
         setPoints([]);
         setEfficiencyPoints([]);
         setVfdPoints([]);
+        setSystemPoints([]);
         setHistory([]);
         setCurrentHistoryIndex(-1);
         setHeadEquation('');
@@ -1483,6 +1810,7 @@ const PumpCurveNew2: React.FC = () => {
         const headPoints: Point[] = [];
         const efficiencyPoints: Point[] = [];
         const vfdPoints: Point[] = [];
+        const systemCurvePoints: SystemPoint[] = [];
 
         if (Array.isArray(data.points?.headPoints)) {
           data.points.headPoints.forEach((point: DefaultDataPoint) => {
@@ -1514,16 +1842,39 @@ const PumpCurveNew2: React.FC = () => {
           });
         }
 
+        if (Array.isArray(data.points?.systemCurves)) {
+          data.points.systemCurves.forEach((curve: { curveId?: number; points?: DefaultDataPoint[] }, index: number) => {
+            const curveId = curve.curveId ? Number(curve.curveId) : index + 1;
+            if (!curve.points || isNaN(curveId) || curveId < 1 || curveId > 4) return;
+
+            curve.points.forEach(point => {
+              const validPoint = validatePoint({
+                actualFlow: point.actualFlow,
+                actualHead: point.actualHead
+              });
+              if (validPoint && validPoint.actualHead !== undefined) {
+                systemCurvePoints.push({
+                  actualFlow: validPoint.actualFlow,
+                  actualHead: validPoint.actualHead,
+                  curveId
+                });
+              }
+            });
+          });
+        }
+
         // Set points
         setPoints(headPoints);
         setEfficiencyPoints(efficiencyPoints);
         setVfdPoints(vfdPoints);
+        setSystemPoints(systemCurvePoints);
 
         // Initialize history with loaded data
         setHistory([{
           points: headPoints,
           efficiencyPoints: efficiencyPoints,
-          vfdPoints: vfdPoints
+          vfdPoints: vfdPoints,
+          systemPoints: systemCurvePoints
         }]);
         setCurrentHistoryIndex(0);
 
@@ -1603,7 +1954,8 @@ const PumpCurveNew2: React.FC = () => {
     setPoints([]);
     setEfficiencyPoints([]);
     setVfdPoints([]);
-    saveToHistory([], [], []);
+    setSystemPoints([]);
+    saveToHistory([], [], [], []);
   };
 
   // Add undo/redo functions
@@ -1613,6 +1965,7 @@ const PumpCurveNew2: React.FC = () => {
       setPoints([...previousState.points]);
       setEfficiencyPoints([...previousState.efficiencyPoints]);
       setVfdPoints([...previousState.vfdPoints]);
+      setSystemPoints([...previousState.systemPoints]);
       setCurrentHistoryIndex(currentHistoryIndex - 1);
     }
   };
@@ -1623,6 +1976,7 @@ const PumpCurveNew2: React.FC = () => {
       setPoints([...nextState.points]);
       setEfficiencyPoints([...nextState.efficiencyPoints]);
       setVfdPoints([...nextState.vfdPoints]);
+      setSystemPoints([...nextState.systemPoints]);
       setCurrentHistoryIndex(currentHistoryIndex + 1);
     }
   };
@@ -1639,8 +1993,11 @@ const PumpCurveNew2: React.FC = () => {
           redo();
         } else if (e.key === 'e') {
           e.preventDefault();
-          setSelectedMode((prev: 'head' | 'efficiency' | 'vfd') => {
-            return prev === 'head' ? 'efficiency' : prev === 'efficiency' ? 'vfd' : 'head';
+          setSelectedMode((prev: 'head' | 'efficiency' | 'vfd' | 'system') => {
+            if (prev === 'head') return 'efficiency';
+            if (prev === 'efficiency') return 'vfd';
+            if (prev === 'vfd') return 'system';
+            return 'head';
           });
         } else if (e.key === 'x') {
           e.preventDefault();
@@ -1656,7 +2013,7 @@ const PumpCurveNew2: React.FC = () => {
   // Initialize history with empty state
   useEffect(() => {
     if (history.length === 0) {
-      saveToHistory([], [], []);
+      saveToHistory([], [], [], []);
     }
   }, []);
 
@@ -1782,11 +2139,12 @@ const PumpCurveNew2: React.FC = () => {
   };
 
   // Add new function to save state to history
-  const saveToHistory = (newPoints: Point[], newEfficiencyPoints: Point[], newVfdPoints: Point[]) => {
+  const saveToHistory = (newPoints: Point[], newEfficiencyPoints: Point[], newVfdPoints: Point[], newSystemPoints: SystemPoint[]) => {
     const newState: HistoryState = {
       points: [...newPoints],
       efficiencyPoints: [...newEfficiencyPoints],
-      vfdPoints: [...newVfdPoints]
+      vfdPoints: [...newVfdPoints],
+      systemPoints: [...newSystemPoints]
     };
 
     // Remove any future states if we're not at the end of the history
@@ -1831,6 +2189,16 @@ const PumpCurveNew2: React.FC = () => {
                 actualHead: point.actualHead ? Number(point.actualHead) : Number(point.head)
               }));
             }
+
+            if (data.points.systemCurves) {
+              data.points.systemCurves = data.points.systemCurves.map((curve: { curveId?: number; points?: DefaultDataPoint[] }, index: number) => ({
+                curveId: curve.curveId ? Number(curve.curveId) : index + 1,
+                points: (curve.points || []).map((point: DefaultDataPoint) => ({
+                  actualFlow: point.actualFlow ? Number(point.actualFlow) : Number(point.flow),
+                  actualHead: point.actualHead ? Number(point.actualHead) : Number(point.head)
+                }))
+              }));
+            }
           }
           
           setComparisonData(data);
@@ -1861,10 +2229,15 @@ const PumpCurveNew2: React.FC = () => {
     }));
     setVfdPoints(newVfdPoints);
 
+    const newSystemPoints = systemPoints.map(point => ({
+      ...point
+    }));
+    setSystemPoints(newSystemPoints);
+
     // Update refs with current values
     prevMaxFlowRef.current = maxFlow;
     prevMaxHeadRef.current = maxHead;
-  }, [maxFlow, maxHead, maxEfficiency, points, efficiencyPoints, vfdPoints]);
+  }, [maxFlow, maxHead, maxEfficiency, points, efficiencyPoints, vfdPoints, systemPoints]);
 
   // Handlers for form inputs
   const handleFormInputChange = (
@@ -1922,12 +2295,12 @@ const PumpCurveNew2: React.FC = () => {
   };
 
   // Handlers for table inputs
-  const handleTableInputChange = (e: React.ChangeEvent<HTMLInputElement>, index: number, type: 'head' | 'efficiency' | 'vfd', field: 'flow' | 'head' | 'efficiency') => {
+  const handleTableInputChange = (e: React.ChangeEvent<HTMLInputElement>, index: number, type: 'head' | 'efficiency' | 'vfd' | 'system', field: 'flow' | 'head' | 'efficiency') => {
     const key = `${type}-${index}-${field}`;
     setTempInputValues(prev => ({ ...prev, [key]: e.target.value }));
   };
 
-  const handleTableInputBlur = (e: React.FocusEvent<HTMLInputElement>, index: number, type: 'head' | 'efficiency' | 'vfd', field: 'flow' | 'head' | 'efficiency') => {
+  const handleTableInputBlur = (e: React.FocusEvent<HTMLInputElement>, index: number, type: 'head' | 'efficiency' | 'vfd' | 'system', field: 'flow' | 'head' | 'efficiency') => {
     const numValue = parseFloat(e.target.value);
     if (isNaN(numValue)) return;
 
@@ -1939,9 +2312,25 @@ const PumpCurveNew2: React.FC = () => {
     });
 
     if (field === 'flow') {
-      handleEditPoint(index, type, numValue, type === 'head' ? points[index].actualHead! : type === 'efficiency' ? efficiencyPoints[index].actualEfficiency! : vfdPoints[index].actualHead!);
+      const currentValue =
+        type === 'head'
+          ? points[index].actualHead!
+          : type === 'efficiency'
+            ? efficiencyPoints[index].actualEfficiency!
+            : type === 'vfd'
+              ? vfdPoints[index].actualHead!
+              : systemPoints[index].actualHead!;
+      handleEditPoint(index, type, numValue, currentValue);
     } else if (field === 'head') {
-      handleEditPoint(index, type, type === 'head' ? points[index].actualFlow : vfdPoints[index].actualFlow, numValue);
+      const currentFlow =
+        type === 'head'
+          ? points[index].actualFlow
+          : type === 'vfd'
+            ? vfdPoints[index].actualFlow
+            : type === 'system'
+              ? systemPoints[index].actualFlow
+              : efficiencyPoints[index].actualFlow;
+      handleEditPoint(index, type, currentFlow, numValue);
     } else if (field === 'efficiency') {
       handleEditPoint(index, type, efficiencyPoints[index].actualFlow, numValue);
     }
@@ -1971,7 +2360,7 @@ const PumpCurveNew2: React.FC = () => {
       const index = points.indexOf(headPoint);
       const newPoints = points.filter((_, i) => i !== index);
       setPoints(newPoints);
-      saveToHistory(newPoints, efficiencyPoints, vfdPoints);
+      saveToHistory(newPoints, efficiencyPoints, vfdPoints, systemPoints);
       return;
     }
 
@@ -1980,7 +2369,7 @@ const PumpCurveNew2: React.FC = () => {
       const index = efficiencyPoints.indexOf(effPoint);
       const newEffPoints = efficiencyPoints.filter((_, i) => i !== index);
       setEfficiencyPoints(newEffPoints);
-      saveToHistory(points, newEffPoints, vfdPoints);
+      saveToHistory(points, newEffPoints, vfdPoints, systemPoints);
       return;
     }
 
@@ -1989,7 +2378,16 @@ const PumpCurveNew2: React.FC = () => {
       const index = vfdPoints.indexOf(vfdPoint);
       const newVfdPoints = vfdPoints.filter((_, i) => i !== index);
       setVfdPoints(newVfdPoints);
-      saveToHistory(points, efficiencyPoints, newVfdPoints);
+      saveToHistory(points, efficiencyPoints, newVfdPoints, systemPoints);
+      return;
+    }
+
+    const sysPoint = findClosestPoint(systemPoints, mouseX, mouseY);
+    if (sysPoint) {
+      const index = systemPoints.indexOf(sysPoint as SystemPoint);
+      const newSystem = systemPoints.filter((_, i) => i !== index);
+      setSystemPoints(newSystem);
+      saveToHistory(points, efficiencyPoints, vfdPoints, newSystem);
       return;
     }
   };
@@ -2257,7 +2655,37 @@ const PumpCurveNew2: React.FC = () => {
                 >
                   OP
                 </button>
+                <button
+                  onClick={() => {
+                    setSelectedMode('system');
+                  }}
+                  className={`px-2 py-2 rounded-md text-xs font-medium transition-all duration-200 border ${
+                    selectedMode === 'system'
+                      ? 'bg-white text-orange-600 border-orange-500 shadow-sm'
+                      : 'text-gray-600 hover:text-orange-600 border-transparent hover:border-orange-300'
+                  }`}
+                >
+                  System
+                </button>
                 </div>
+              {selectedMode === 'system' && (
+                <div className="flex items-center gap-1 ml-2">
+                  {[1, 2, 3, 4].map((id) => (
+                    <button
+                      key={id}
+                      onClick={() => setActiveSystemCurve(id)}
+                      className="w-8 h-8 rounded-md border text-xs font-semibold transition-all duration-150"
+                      style={{
+                        backgroundColor: activeSystemCurve === id ? SYSTEM_COLORS[id - 1] : '#fff',
+                        color: activeSystemCurve === id ? '#fff' : SYSTEM_COLORS[id - 1],
+                        borderColor: SYSTEM_COLORS[id - 1]
+                      }}
+                    >
+                      {id}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             </div>
 
@@ -2650,6 +3078,114 @@ const PumpCurveNew2: React.FC = () => {
                           </Button>
                         </td>
                       </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="max-w-[800px] rounded-lg col-span-2">
+              <h3 className="text-xs text-orange-700 font-semibold">System Curve Points</h3>
+              <table className="w-full border-collapse table-fixed bg-white">
+                <colgroup>
+                  <col className="w-[6%]" />
+                  <col className="w-[10%]" />
+                  <col className="w-[18%]" />
+                  <col className="w-[18%]" />
+                  <col className="w-[8%]" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th className="border p-1 text-left">No</th>
+                    <th className="border p-1 text-left">Curve</th>
+                    <th className="border p-1 text-left">Flow(m쨀/h)</th>
+                    <th className="border p-1 text-left">TDH(m)</th>
+                    <th className="border p-1 text-left">Del.</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[1, 2, 3, 4].map((curveId) => {
+                    const curvePoints = sortedSystemCurves(curveId);
+                    const curveInts = systemIntersections.filter(int => int.curveId === curveId);
+                    const totalRows = curvePoints.length + curveInts.length;
+                    if (totalRows === 0) return null;
+                    return (
+                      <React.Fragment key={`curve-${curveId}`}>
+                        {curvePoints.map((point, idx) => (
+                          <tr key={`${curveId}-p-${idx}`}>
+                            <td className="border p-1 text-left">{idx + 1}</td>
+                            <td className="border p-1 text-left">
+                              <span
+                                className="px-2 py-1 rounded-md border text-[10px] font-semibold"
+                                style={{
+                                  color: SYSTEM_COLORS[curveId - 1],
+                                  borderColor: SYSTEM_COLORS[curveId - 1]
+                                }}
+                              >
+                                Curve {curveId}
+                              </span>
+                            </td>
+                            <td className="border p-1 text-left">
+                              <input
+                                type="number"
+                                value={tempInputValues[`system-${point.__index}-flow`] ?? point.actualFlow.toFixed(1)}
+                                onChange={(e) => handleTableInputChange(e, point.__index, 'system', 'flow')}
+                                onBlur={(e) => handleTableInputBlur(e, point.__index, 'system', 'flow')}
+                                onKeyDown={(e) => handleTableInputKeyDown(e)}
+                                className="w-14 h-6"
+                                title={`Edit flow for system curve ${curveId} point ${idx + 1}`}
+                                placeholder="Flow"
+                              />
+                            </td>
+                            <td className="border p-1 text-left">
+                              <input
+                                type="number"
+                                value={tempInputValues[`system-${point.__index}-head`] ?? point.actualHead!.toFixed(1)}
+                                onChange={(e) => handleTableInputChange(e, point.__index, 'system', 'head')}
+                                onBlur={(e) => handleTableInputBlur(e, point.__index, 'system', 'head')}
+                                onKeyDown={(e) => handleTableInputKeyDown(e)}
+                                className="w-14 h-6"
+                                title={`Edit head for system curve ${curveId} point ${idx + 1}`}
+                                placeholder="Head"
+                              />
+                            </td>
+                            <td className="border p-1 text-left">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => handleDeletePoint(point.__index, 'system')}
+                                className="h-6 w-6"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </Button>
+                            </td>
+                          </tr>
+                        ))}
+                        {curveInts.map((p, idx) => (
+                          <tr key={`${curveId}-i-${idx}`} className="bg-orange-50">
+                            <td className="border p-1 text-left">{curvePoints.length + idx + 1}</td>
+                            <td className="border p-1 text-left">
+                              <span
+                                className="px-2 py-1 rounded-md border text-[10px] font-semibold"
+                                style={{
+                                  color: SYSTEM_COLORS[curveId - 1],
+                                  borderColor: SYSTEM_COLORS[curveId - 1]
+                                }}
+                              >
+                                Curve {curveId}
+                              </span>
+                              <span className="ml-1 text-[10px] text-gray-600">(INT)</span>
+                            </td>
+                            <td className="border p-1 text-left text-gray-700 font-semibold">
+                              {p.actualFlow.toFixed(1)}
+                            </td>
+                            <td className="border p-1 text-left text-gray-700 font-semibold">
+                              {p.actualHead.toFixed(1)}
+                            </td>
+                            <td className="border p-1 text-left text-center text-gray-500 text-[11px]">—</td>
+                          </tr>
+                        ))}
+                      </React.Fragment>
                     );
                   })}
                 </tbody>
