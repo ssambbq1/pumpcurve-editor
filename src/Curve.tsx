@@ -141,6 +141,7 @@ const PumpCurveNew2: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [headEquation, setHeadEquation] = useState<string>('');
   const [efficiencyEquation, setEfficiencyEquation] = useState<string>('');
+  const [systemCurve1Equation, setSystemCurve1Equation] = useState<string>('');
   const [caseInfo, setCaseInfo] = useState<CaseInfo>({
     caseName: '',
     projectName: '',
@@ -407,6 +408,14 @@ const PumpCurveNew2: React.FC = () => {
         return `${coef.toFixed(12)}x^${power}`;
       })
       .join(' + ');
+  };
+
+  const formatSystemEquation = (coeffs: { a: number; c: number } | null) => {
+    if (!coeffs) return '';
+    const aPart = `${coeffs.a.toFixed(12)}x^2`;
+    const cSign = coeffs.c >= 0 ? ' + ' : ' - ';
+    const cPart = Math.abs(coeffs.c).toFixed(12);
+    return `${aPart}${cSign}${cPart}`;
   };
 
   const drawPolynomialTrendline = (
@@ -2034,9 +2043,12 @@ const PumpCurveNew2: React.FC = () => {
     // Calculate and set equations
     const headCoefficients = calculateActualPolynomialCoefficients(points, headDegree);
     const efficiencyCoefficients = calculateActualPolynomialCoefficients(efficiencyPoints, efficiencyDegree);
+    const curve1Points = sortedSystemCurves(1);
+    const systemCoefficients = computeSystemCoeffs(curve1Points);
     
     setHeadEquation(headCoefficients ? formatEquation(headCoefficients) : '');
     setEfficiencyEquation(efficiencyCoefficients ? formatEquation(efficiencyCoefficients) : '');
+    setSystemCurve1Equation(formatSystemEquation(systemCoefficients));
 
     // Force canvas redraw when degrees change
     const canvas = canvasRef.current;
@@ -2046,7 +2058,7 @@ const PumpCurveNew2: React.FC = () => {
         drawCanvas(ctx, canvas.width, canvas.height);
       }
     }
-  }, [points, efficiencyPoints, headDegree, efficiencyDegree]);
+  }, [points, efficiencyPoints, headDegree, efficiencyDegree, systemPoints]);
 
   const handleClearAllPoints = () => {
     setPoints([]);
@@ -2959,6 +2971,26 @@ const PumpCurveNew2: React.FC = () => {
                   <Copy className="h-4 w-4" />
                     Copy
                 </Button>
+                  </div>
+                </div>
+              )}
+
+              {systemCurve1Equation && (
+                <div className="flex items-center gap-2 px-2 bg-gray-50 rounded-lg ">
+                  <div className="flex-grow max-w-[1200px] overflow-hidden">
+                    <span className="font-semibold text-sm text-orange-600">System Curve 1 = </span>
+                    <span className="font-mono whitespace-nowrap overflow-x-auto">{systemCurve1Equation}</span>
+                  </div>
+                  <div className="flex-shrink-0">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleCopyEquation(systemCurve1Equation, 'system1-equation')}
+                      className={`flex items-center gap-2 h-6 transition-colors duration-200 ${copyEffect === 'system1-equation' ? 'bg-green-100 text-gray-400 border-gray-400' : ''}`}
+                    >
+                      <Copy className="h-4 w-4" />
+                      Copy
+                    </Button>
                   </div>
                 </div>
               )}
